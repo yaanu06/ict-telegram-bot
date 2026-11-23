@@ -777,9 +777,12 @@ function getMarketSettings(p, metadata = {}) {
         targetRR: Number.isFinite(Number(metadata.minimum_rr)) && Number(metadata.minimum_rr) > 0 ? Number(metadata.minimum_rr) : settings.targetRR,
         minSLMultiplier: Number.isFinite(Number(metadata.min_sl_atr_multiplier)) && Number(metadata.min_sl_atr_multiplier) > 0 ? Number(metadata.min_sl_atr_multiplier) : settings.minSLMultiplier
     });
-    if (assetClass === 'METAL') return withMetadata({ slBuffer: 3, minSL: 3, maxSLPct: 0.015, targetRR: 2.5, prec: 2, pipSize: 0.1, minSLMultiplier: 2.0 });
+    if (assetClass === 'METAL') return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.015, targetRR: 2.0, prec: symbol.includes('XAG') ? 3 : 2, pipSize: symbol.includes('XAG') ? 0.001 : 0.1, minSLMultiplier: 0.25 });
     if (assetClass === 'FOREX' && quoteCurrency === 'JPY') return withMetadata({ slBuffer: 0.15, minSL: 0.10, maxSLPct: 0.01, targetRR: 2.5, prec: 3, pipSize: 0.01 });
-    if (assetClass === 'CRYPTO') return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.25, targetRR: 2.5, prec: 8, pipSize: 0.00000001, minSLMultiplier: 2.0 });
+    if (assetClass === 'CRYPTO') {
+        const btcUsd = /BTC\/?(?:USD|USDT)$/.test(symbol);
+        return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.25, targetRR: 2.0, prec: btcUsd ? 2 : 8, pipSize: btcUsd ? 0.01 : 0.00000001, minSLMultiplier: 0.25 });
+    }
     if (assetClass === 'EQUITY' || assetClass === 'INDEX') return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.10, targetRR: 2.5, prec: 4, pipSize: 0.01, minSLMultiplier: 1.5 });
     if (assetClass === 'UNKNOWN') return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.10, targetRR: 2.5, prec: 6, pipSize: 0.000001, minSLMultiplier: 1.5 });
     return withMetadata({ slBuffer: 0.0005, minSL: 0.0003, maxSLPct: 0.01, targetRR: 2.5, prec: 5, pipSize: 0.0001 });
@@ -17230,6 +17233,7 @@ const RAW_CANDLE_AI_OUTPUT_CONTRACT = [
 ].join('\n');
 
 const RAW_CANDLE_AI_KILLZONES = Object.freeze([
+    Object.freeze({ name: 'ASIA', start_minutes: 0, end_minutes: 7 * 60 }),
     Object.freeze({ name: 'LONDON', start_minutes: 7 * 60, end_minutes: 11 * 60 }),
     Object.freeze({ name: 'OVERLAP', start_minutes: 11 * 60, end_minutes: 12 * 60 }),
     Object.freeze({ name: 'NEW_YORK', start_minutes: 12 * 60, end_minutes: 15 * 60 })
@@ -18936,8 +18940,8 @@ function rawTextContextValue(value, precision = 2) {
 
 function buildRawTextSessionLevels(candles = [], asOfMs = null, precision = 2) {
     const definitions = {
-        'ASIA KZ': { key: 'ASIA', start: 0, end: 4 },
-        'LONDON KZ': { key: 'LONDON', start: 7, end: 10 },
+          'ASIA KZ': { key: 'ASIA', start: 0, end: 7 },
+          'LONDON KZ': { key: 'LONDON', start: 7, end: 11 },
         'NEW_YORK KZ': { key: 'NY', start: 12, end: 15 }
     };
     const groups = new Map();
@@ -20744,13 +20748,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     const levelValue = value => value == null ? 'NONE' : rawTextPacketFormatNumber(value, precision);
     const macroContextLevels = [
         { name: 'PREVIOUS_DAY_HIGH', value: macroLevels.previous_day_high },
-        { name: 'PREVIOUS_DAY_LOW', value: macroLevels.previous_day_low },
-        { name: 'ASIA_HIGH', value: macroLevels.asia_high },
-        { name: 'ASIA_LOW', value: macroLevels.asia_low },
-        { name: 'LONDON_HIGH', value: macroLevels.london_high },
-        { name: 'LONDON_LOW', value: macroLevels.london_low },
-        { name: 'NEW_YORK_HIGH', value: macroLevels.new_york_high },
-        { name: 'NEW_YORK_LOW', value: macroLevels.new_york_low }
+          { name: 'PREVIOUS_DAY_LOW', value: macroLevels.previous_day_low }
     ];
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
@@ -21251,6 +21249,7 @@ function buildRawCandleAiFacts(source = {}, symbol, metadata = {}, asOfMs = Date
     const macro = buildRawCandleAiMacroLevels(source, asOfMs);
     const clock = rawCandleAiServerClock(asOfMs);
     const settings = getMarketSettings(symbol, metadata || {});
+    const assetClass = metadata.asset_class || getAssetClass(symbol);
     const provider = getMarketDataProvider();
     const providerSymbol = provider === 'TVKIT' ? getTvkitSymbol(symbol) : (typeof getProviderSymbol === 'function' ? getProviderSymbol(symbol) : 'UNKNOWN');
     const news = checkHighImpactNews(symbol);
@@ -21268,6 +21267,11 @@ function buildRawCandleAiFacts(source = {}, symbol, metadata = {}, asOfMs = Date
         return candles.length >= 15 ? atr(candles, 14) : null;
     };
     const level = (name, value, date, window) => name + '=' + rawCandleAiFactValue(value, precision) + ' (' + (date || 'UNKNOWN') + ', ' + window + ')';
+    const gapNote = assetClass === 'CRYPTO'
+        ? 'CRYPTO trades 24/7; gaps are provider/data gaps unless separately proven.'
+        : ['FOREX', 'METAL'].includes(assetClass)
+            ? '22:00-23:00 UTC gaps and weekends may be broker rollover or market closure.'
+            : 'Market gaps may reflect market hours, weekends, holidays, halts, or provider data gaps.';
     return [
         '=== FACTS — CLOSED-CANDLE DERIVED ===',
         'GENERATED_AT=' + generatedAt,
@@ -21278,6 +21282,9 @@ function buildRawCandleAiFacts(source = {}, symbol, metadata = {}, asOfMs = Date
         'CURRENT_PRICE=' + rawCandleAiFactValue(canonicalReferencePrice, precision),
         'DATA_PROVIDER=' + provider,
         'PROVIDER_SYMBOL=' + (providerSymbol || 'UNKNOWN'),
+        'ASSET_CLASS=' + assetClass,
+        'MARKET_HOURS=' + (assetClass === 'CRYPTO' ? '24/7' : 'UNKNOWN'),
+        'TIMEZONE_BASIS=UTC',
         'VOLUME_RELIABLE=' + (hasRealVolume(symbol, metadata) ? 'YES' : 'NO'),
         'PRICE_PRECISION=' + (Number.isFinite(Number(settings?.prec)) ? settings.prec : 'UNKNOWN'),
         'TICK_SIZE=' + rawCandleAiFactValue(settings?.pipSize, precision),
@@ -21293,17 +21300,17 @@ function buildRawCandleAiFacts(source = {}, symbol, metadata = {}, asOfMs = Date
         'ATR_1H=' + rawCandleAiFactValue(atrValue('1H'), precision) + ' (closed-candle ATR, period 14)',
         'ATR_15M=' + rawCandleAiFactValue(atrValue('15M'), precision) + ' (closed-candle ATR, period 14)',
         'ATR_5M=' + rawCandleAiFactValue(atrValue('5M'), precision) + ' (closed-candle ATR, period 14)',
-        level('ASIA_HIGH', macro.asia_high, sessions.ASIA?.day, '00:00-04:00 UTC'),
-        level('ASIA_LOW', macro.asia_low, sessions.ASIA?.day, '00:00-04:00 UTC'),
-        level('LONDON_HIGH', macro.london_high, sessions.LONDON?.day, '07:00-10:00 UTC'),
-        level('LONDON_LOW', macro.london_low, sessions.LONDON?.day, '07:00-10:00 UTC'),
+        level('ASIA_HIGH', macro.asia_high, sessions.ASIA?.day, '00:00-07:00 UTC'),
+        level('ASIA_LOW', macro.asia_low, sessions.ASIA?.day, '00:00-07:00 UTC'),
+        level('LONDON_HIGH', macro.london_high, sessions.LONDON?.day, '07:00-11:00 UTC'),
+        level('LONDON_LOW', macro.london_low, sessions.LONDON?.day, '07:00-11:00 UTC'),
         level('NEW_YORK_HIGH', macro.new_york_high, sessions.NY?.day, '12:00-15:00 UTC'),
         level('NEW_YORK_LOW', macro.new_york_low, sessions.NY?.day, '12:00-15:00 UTC'),
         level('PREVIOUS_DAY_HIGH', macro.previous_day_high, rawCandleAiFactDate(history['1D'].at(-1)?.t), '1D UTC'),
         level('PREVIOUS_DAY_LOW', macro.previous_day_low, rawCandleAiFactDate(history['1D'].at(-1)?.t), '1D UTC'),
         level('PREVIOUS_WEEK_HIGH', previousWeek?.high, previousWeekKey, 'week UTC'),
         level('PREVIOUS_WEEK_LOW', previousWeek?.low, previousWeekKey, 'week UTC'),
-        'GAP_NOTE=Gaps at 22:00-23:00 UTC and weekends are broker rollover or market closure, not missing data.',
+        'GAP_NOTE=' + gapNote,
         ''
     ];
 }
@@ -21320,14 +21327,20 @@ function buildRawCandleAiSwingMap(source = {}, asOfMs = Date.now(), precision = 
             const later = candles.slice(swing.i + 1);
             const breakCandle = later.find(candle => swing.type === 'HIGH' ? Number(candle.c) > Number(swing.p) : Number(candle.c) < Number(swing.p));
             const breakTime = breakCandle ? rawTextPacketTimestamp(breakCandle.t ?? breakCandle.time ?? breakCandle.timestamp) : NaN;
-            lines.push('SWING | TF=' + timeframe + ' | TYPE=' + swing.type + ' | PRICE=' + rawCandleAiFactValue(swing.p, precision) + ' | CANDLE_TIME=' + (swing.pivot_bar_time || 'UNKNOWN') + ' | STATE=' + (breakCandle ? 'BROKEN' : 'UNBROKEN') + ' | BROKEN_BY_CLOSE_TIME=' + (Number.isFinite(breakTime) ? new Date(breakTime).toISOString() : 'NONE'));
+            const pivotTime = rawTextPacketTimestamp(swing.pivot_bar_time);
+            lines.push('SWING | TF=' + timeframe + ' | TYPE=' + swing.type + ' | PRICE=' + rawCandleAiFactValue(swing.p, precision) + ' | CANDLE_TIME=' + (Number.isFinite(pivotTime) ? new Date(pivotTime).toISOString() : 'UNKNOWN') + ' | STATE=' + (breakCandle ? 'BROKEN' : 'UNBROKEN') + ' | BROKEN_BY_CLOSE_TIME=' + (Number.isFinite(breakTime) ? new Date(breakTime).toISOString() : 'NONE'));
         }
-        const high = (swings.H || []).at(-1);
-        const low = (swings.L || []).at(-1);
+        const active = (items, type) => (items || []).filter(swing => !candles.slice(swing.i + 1).some(candle => type === 'HIGH' ? Number(candle.c) > Number(swing.p) : Number(candle.c) < Number(swing.p)));
+        const high = active(swings.H, 'HIGH').at(-1);
+        const low = active(swings.L, 'LOW').at(-1);
         const midpoint = high && low ? (Number(high.p) + Number(low.p)) / 2 : null;
-        const location = isPremiumDiscount(candles, currentPrice)?.zone || 'UNKNOWN';
+        const price = Number(currentPrice);
+        const location = high && low && Number.isFinite(price)
+            ? price > Number(high.p) || price < Number(low.p) ? 'OUTSIDE_RANGE'
+                : price > midpoint ? 'PREMIUM' : price < midpoint ? 'DISCOUNT' : 'EQUILIBRIUM'
+            : 'UNKNOWN';
         lines.push('STRUCTURE_SEQUENCE=' + (analyzeMarketStructure(candles).join('/') || 'UNKNOWN'));
-        lines.push('DEALING_RANGE=HIGH:' + rawCandleAiFactValue(high?.p, precision) + ' LOW:' + rawCandleAiFactValue(low?.p, precision) + ' MIDPOINT:' + rawCandleAiFactValue(midpoint, precision) + ' LOCATION:' + String(location).toUpperCase());
+        lines.push((high && low ? 'DEALING_RANGE=' : 'HISTORICAL_RANGE=') + 'HIGH:' + rawCandleAiFactValue(high?.p, precision) + ' LOW:' + rawCandleAiFactValue(low?.p, precision) + ' MIDPOINT:' + rawCandleAiFactValue(midpoint, precision) + ' LOCATION:' + location);
     }
     lines.push('');
     return lines;
