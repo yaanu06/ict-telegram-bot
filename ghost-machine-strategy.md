@@ -104,7 +104,8 @@ Soft warnings never block. State them in notes and lower confidence:
     stop inside the wick and do not invent a farther target.
 
 === QUALITY FACTORS (CONFIDENCE ONLY) ===
-20. LTF sweep/rejection, displacement strength, session/killzone timing,
+20. LTF sweep/rejection, displacement strength, session/killzone timing
+    (including a pre-London 05:00-07:00 UTC sweep of the Asia high/low),
     momentum divergence, and reliable volume adjust confidence only. They are
     never hard vetoes for a pending limit.
 
