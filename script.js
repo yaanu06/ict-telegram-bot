@@ -21488,8 +21488,10 @@ async function sha256Text(text) {
 async function logManualAiResult() {
     const input = document.getElementById('manualAiResultInput');
     const status = document.getElementById('manualAiLogStatus');
-    let result;
-    try { result = JSON.parse(String(input?.value || '')); } catch { if (status) status.textContent = 'Invalid JSON; nothing was logged.'; return; }
+    const field = id => String(document.getElementById(id)?.value || '').trim();
+    const rawResponse = String(input?.value || '').trim();
+    let parsed = {};
+    if (rawResponse.startsWith('{')) { try { parsed = JSON.parse(rawResponse); } catch { if (status) status.textContent = 'Optional JSON response is invalid; use the explicit fields instead.'; return; } }
     const packet = getCurrentRawMarketAnalysisPacket();
     if (!packet) { if (status) status.textContent = 'Run a completed scan first.'; return; }
     const replay = packet.replay || {};
@@ -21498,24 +21500,25 @@ async function logManualAiResult() {
         const line = facts.find(item => String(item).startsWith(name + '='));
         return line ? String(line).slice(name.length + 1).split(' ')[0] : null;
     };
-    const value = key => result?.[key] ?? null;
+    const numeric = id => { const value = field(id); return value === '' ? null : Number.isFinite(Number(value)) ? Number(value) : null; };
+    const value = (key, fieldId = null) => (fieldId && field(fieldId) !== '' ? field(fieldId) : parsed?.[key]) ?? null;
     const record = {
         scan_id: `MANUAL:${currentScanArtifact?.scan_id || replay.snapshot_id || Date.now()}`,
         generated_at: new Date().toISOString(), symbol: packet.symbol,
         provider: getMarketDataProvider(), asset_class: getAssetClass(packet.symbol),
         prompt_contract_version: 'RAW_CANDLE_AI_V4.0', packet_sha256: await sha256Text(packet.text),
         quote_age_seconds: fact('QUOTE_AGE_SECONDS'), quote_stale: fact('QUOTE_STALE'), session_name: fact('SESSION_NAME'), news_window: fact('NEWS_WINDOW'),
-        atr_1h: fact('ATR_1H'), atr_4h: fact('ATR_4H'), action: String(value('action') || 'UNREVIEWED').toUpperCase(),
-        reason_code: value('reason_code'), entry: value('entry'), stop_loss: value('stop_loss'),
-        tp1: value('tp1'), tp2: value('tp2'), tp3: value('tp3'), risk: value('risk'), rr_tp1: value('rr_tp1'),
-        confidence: value('confidence'), poi_zone_low: value('poi_zone_low'), poi_zone_high: value('poi_zone_high'),
-        dol_level: value('dol_level'), expiry_hours: value('expiry_hours') ?? 24,
-        citations_verified: value('citations_verified') || 'UNSET', notes: value('notes'),
-        raw_ai_response: value('raw_ai_response') || null, outcome: 'PENDING'
+        atr_1h: fact('ATR_1H'), atr_4h: fact('ATR_4H'), action: String(value('action', 'manualAiAction') || 'UNREVIEWED').toUpperCase(),
+        reason_code: value('reason_code', 'manualAiReason'), entry: numeric('manualAiEntry') ?? value('entry'), stop_loss: numeric('manualAiStop') ?? value('stop_loss'),
+        tp1: numeric('manualAiTp1') ?? value('tp1'), tp2: numeric('manualAiTp2') ?? value('tp2'), tp3: numeric('manualAiTp3') ?? value('tp3'), risk: numeric('manualAiRisk') ?? value('risk'), rr_tp1: numeric('manualAiRr') ?? value('rr_tp1'),
+        confidence: numeric('manualAiConfidence') ?? value('confidence'), poi_zone_low: numeric('manualAiZoneLow') ?? value('poi_zone_low'), poi_zone_high: numeric('manualAiZoneHigh') ?? value('poi_zone_high'),
+        dol_level: numeric('manualAiDol') ?? value('dol_level'), expiry_hours: numeric('manualAiExpiry') ?? value('expiry_hours') ?? 24,
+        citations_verified: value('citations_verified', 'manualAiCitations') || 'UNSET', notes: value('notes', 'manualAiNotes'),
+        raw_ai_response: rawResponse || null, outcome: 'PENDING'
     };
     if (!appendManualScanLog(record)) { if (status) status.textContent = 'Log storage failed; scan was not changed.'; return; }
     if (status) status.textContent = `Logged ${record.action}; manual review only.`;
-    if (input) input.value = '';
+    ['manualAiResultInput', 'manualAiNotes', 'manualAiReason', 'manualAiEntry', 'manualAiStop', 'manualAiTp1', 'manualAiTp2', 'manualAiTp3', 'manualAiRisk', 'manualAiRr', 'manualAiConfidence', 'manualAiZoneLow', 'manualAiZoneHigh', 'manualAiDol', 'manualAiExpiry'].forEach(id => { const element = document.getElementById(id); if (element) element.value = ''; });
 }
 
 function exportManualScanLog() {

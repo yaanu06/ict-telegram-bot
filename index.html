@@ -50,8 +50,26 @@
 
         <div class="section">
             <h3>Manual AI Result Log</h3>
-            <p class="hint">Paste a JSON result you reviewed in ChatGPT. Nothing is inferred or executed.</p>
-            <textarea id="manualAiResultInput" class="json-output" rows="7" placeholder='{"action":"NO_TRADE","reason_code":"STRUCTURE_UNCLEAR","notes":"..."}'></textarea>
+            <p class="hint">Enter only what you reviewed in ChatGPT. Nothing is inferred or executed.</p>
+            <div class="settings-grid">
+                <select id="manualAiAction"><option value="UNREVIEWED">Action</option><option>BUY_LIMIT</option><option>SELL_LIMIT</option><option>NO_TRADE</option></select>
+                <input id="manualAiReason" placeholder="Reason code">
+                <input id="manualAiEntry" inputmode="decimal" placeholder="Entry">
+                <input id="manualAiStop" inputmode="decimal" placeholder="Stop loss">
+                <input id="manualAiTp1" inputmode="decimal" placeholder="TP1">
+                <input id="manualAiTp2" inputmode="decimal" placeholder="TP2">
+                <input id="manualAiTp3" inputmode="decimal" placeholder="TP3">
+                <input id="manualAiRisk" inputmode="decimal" placeholder="Risk">
+                <input id="manualAiRr" inputmode="decimal" placeholder="RR TP1">
+                <input id="manualAiConfidence" inputmode="numeric" placeholder="Confidence">
+                <input id="manualAiZoneLow" inputmode="decimal" placeholder="POI zone low">
+                <input id="manualAiZoneHigh" inputmode="decimal" placeholder="POI zone high">
+                <input id="manualAiDol" inputmode="decimal" placeholder="DOL level">
+                <input id="manualAiExpiry" inputmode="numeric" placeholder="Expiry hours (24)">
+                <select id="manualAiCitations"><option value="UNSET">Citations unverified</option><option value="YES">Citations verified</option><option value="NO">Citations not verified</option></select>
+            </div>
+            <textarea id="manualAiNotes" class="json-output" rows="3" placeholder="Manual notes"></textarea>
+            <textarea id="manualAiResultInput" class="json-output" rows="5" placeholder="Optional raw ChatGPT response or JSON result"></textarea>
             <div class="action-row">
                 <button id="logAiResultBtn" class="save-btn">Log AI Result</button>
                 <button id="exportScanLogBtn" class="copy-json-btn">Export Scan Log JSON</button>
