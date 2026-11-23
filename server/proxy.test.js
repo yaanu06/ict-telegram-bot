@@ -125,6 +125,20 @@ describe('market and AI proxy boundary', () => {
         }
     });
 
+    test('rejects unauthenticated and oversized Telegram alerts', async () => {
+        const nowMs = Date.parse('2026-11-15T10:00:00Z');
+        const botToken = '123456:test-token';
+        const server = createProxyServer({ env: { TELEGRAM_BOT_TOKEN: botToken, PROXY_MAX_REQUESTS: '20' }, fetchImpl: jest.fn(), now: () => nowMs });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const unauthenticated = await request(server, 'POST', '/api/telegram/notify', { 'content-type': 'application/json' }, JSON.stringify({ text: 'alert' }));
+            expect(unauthenticated.status).toBe(401);
+            const initData = telegramInitData(botToken, nowMs, 778899);
+            const oversized = await request(server, 'POST', '/api/telegram/notify', { 'content-type': 'application/json' }, JSON.stringify({ init_data: initData, text: 'x'.repeat(3501) }));
+            expect(oversized.status).toBe(400);
+        } finally { await new Promise(resolve => server.close(resolve)); }
+    });
+
     test('applies a separate Twelve Data budget below the provider plan limit', async () => {
         const fetchImpl = jest.fn(async () => ({ status: 200, text: async () => JSON.stringify({ price: '1.25', timestamp: '2026-09-19T10:00:00Z' }) }));
         const server = createProxyServer({
