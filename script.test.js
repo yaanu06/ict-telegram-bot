@@ -702,6 +702,22 @@ describe('manual market-pack prompt lint', () => {
     });
 });
 
+describe('symbol-aware market-pack defaults', () => {
+    test.each([
+        ['XAU/USD', 'METAL', 0.1, 2, false], ['XAG/USD', 'METAL', 0.001, 3, false],
+        ['BTC/USD', 'CRYPTO', 0.01, 2, true], ['EUR/USD', 'FOREX', 0.0001, 5, false],
+        ['GBP/USD', 'FOREX', 0.0001, 5, false], ['USD/JPY', 'FOREX', 0.01, 3, false],
+        ['AUD/USD', 'FOREX', 0.0001, 5, false], ['USD/CAD', 'FOREX', 0.0001, 5, false],
+        ['USD/CHF', 'FOREX', 0.0001, 5, false], ['NZD/USD', 'FOREX', 0.0001, 5, false],
+        ['EUR/GBP', 'FOREX', 0.0001, 5, false], ['EUR/JPY', 'FOREX', 0.01, 3, false], ['GBP/JPY', 'FOREX', 0.01, 3, false]
+    ])('%s resolves asset-aware display and volume defaults', (symbol, assetClass, tick, precision, volume) => {
+        const ctx = getContext();
+        expect(ctx.getAssetClass(symbol)).toBe(assetClass);
+        expect(ctx.getMarketSettings(symbol)).toEqual(expect.objectContaining({ pipSize: tick, prec: precision }));
+        expect(ctx.hasRealVolume(symbol)).toBe(volume);
+    });
+});
+
 describe('one-file AI Market Pack', () => {
     test('builds a PDF containing chart imagery, strategy text, and raw timeframe data', () => {
         const ctx = getContext();
