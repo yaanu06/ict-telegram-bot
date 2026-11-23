@@ -730,6 +730,16 @@ describe('manual scan measurement', () => {
         expect(metrics.expectancy_r).toBeCloseTo(0);
         expect(metrics.citations_verified_rate).toBeCloseTo(2 / 3);
     });
+
+    test('uses closed-candle pending outcome precedence and conservative stop handling', () => {
+        const ctx = getContext();
+        const record = { outcome: 'PENDING', action: 'BUY_LIMIT', entry: 100, stop_loss: 98, tp1: 104, poi_zone_low: 99, poi_zone_high: 101, dol_level: 110, generated_at: '2026-01-01T00:00:00Z', expiry_hours: 24 };
+        const candle = { t: '2026-01-01T01:00:00Z', o: 101, h: 105, l: 97, c: 100, is_closed: true };
+        expect(ctx.evaluateManualPendingOutcome(record, candle, Date.parse('2026-01-01T01:00:00Z')).outcome).toBe('SL_HIT');
+        const consumed = { ...record, poi_zone_low: 101, poi_zone_high: 102 };
+        expect(ctx.evaluateManualPendingOutcome(consumed, candle, Date.parse('2026-01-01T01:00:00Z')).outcome).toBe('CANCELLED_ZONE_CONSUMED');
+        expect(ctx.evaluateManualPendingOutcome(record, { ...candle, is_closed: false }).outcome).toBe('PENDING');
+    });
 });
 
 describe('one-file AI Market Pack', () => {
