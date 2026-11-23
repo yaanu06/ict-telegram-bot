@@ -3529,6 +3529,19 @@ function buildFreshExecutionZones(narrative, historyCache = {}, existingZones = 
     return buildFreshExecutionZonesForNarrative(narrative, historyCache, existingZones, pairLocal, currentPrice, symbolMetadata);
 }
 
+// A higher-timeframe thesis establishes direction, target, and invalidation.
+// It may then use a 15M zone for execution, but never the reverse: a 15M
+// narrative remains a 15M setup and cannot manufacture a higher-timeframe
+// thesis.  Keep the parent's configured execution timeframe first so existing
+// behavior and its own zones stay available.
+function executionTimeframesForNarrative(narrative = {}) {
+    const parentTimeframe = String(narrative.setup_timeframe || narrative.timeframe || '').toUpperCase();
+    const configuredExecutionTimeframe = String(narrative.execution_timeframe || parentTimeframe || '1H').toUpperCase();
+    const timeframes = [configuredExecutionTimeframe];
+    if (['4H', '1H'].includes(parentTimeframe)) timeframes.push('15M');
+    return [...new Set(timeframes.filter(tf => ['4H', '1H', '15M'].includes(tf)))];
+}
+
 async function getHistory(tfStr, forPair, options = {}) {
     const requestedPair = normalizeCanonicalMarketSymbol(forPair || pair);
     const cacheKey = `${requestedPair}|${tfStr}`;
@@ -9912,14 +9925,29 @@ function buildStrategySetups({ pair, price, historyCache, realZones, marketConte
         if (narrativeState.state === 'STALE_NARRATIVE') staleNarratives++;
         if (narrativeState.state !== 'ACTIVE') continue;
         activeNarratives++;
-        const freshZones = buildFreshExecutionZonesForNarrative(narrative, historyCache, zoneList, pair, price, symbolMetadata || {});
-        for (const key of Object.keys(freshZoneStats)) freshZoneStats[key] += freshZones.execution_zone_stats?.[key] || 0;
+        const freshZones = executionTimeframesForNarrative(narrative).flatMap(executionTimeframe => {
+            const isLowerTimeframeRefinement = executionTimeframe === '15M'
+                && String(narrative.execution_timeframe || narrative.timeframe || '').toUpperCase() !== '15M';
+            const executionNarrative = isLowerTimeframeRefinement
+                ? { ...narrative, execution_timeframe: executionTimeframe }
+                : narrative;
+            const discovered = buildFreshExecutionZonesForNarrative(executionNarrative, historyCache, zoneList, pair, price, symbolMetadata || {});
+            for (const key of Object.keys(freshZoneStats)) freshZoneStats[key] += discovered.execution_zone_stats?.[key] || 0;
+            return discovered.map(zone => isLowerTimeframeRefinement
+                ? { ...zone, htf_aligned_refinement: true, parent_setup_timeframe: narrative.setup_timeframe || narrative.timeframe, parent_narrative_id: narrative.id || null }
+                : zone);
+        });
         for (const zone of freshZones) {
             const freshSetup = {
                 ...narrative,
-                id: `${narrative.id || narrative.primary}-${zone.type}-fresh-${zone.created_index}`,
+                id: `${narrative.id || narrative.primary}-${zone.timeframe}-${zone.type}-fresh-${zone.created_index}`,
                 label: narrative.label,
                 execution_zone: zone,
+                // The parent setup stays responsible for the HTF thesis.
+                // Only the entry location and its structural stop anchor are
+                // refined on 15M.
+                execution_timeframe: zone.timeframe,
+                lower_timeframe_refinement: zone.htf_aligned_refinement === true,
                 entry_model: 'FRESH_RETRACEMENT_LIMIT',
                 execution_model: 'FRESH_RETRACEMENT_LIMIT',
                 entry_region_source: zone.entry_region_source,

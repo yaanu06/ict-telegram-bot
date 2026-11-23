@@ -2001,6 +2001,13 @@ describe('daily opportunity planning', () => {
 });
 
 describe('active narrative fresh execution zones', () => {
+    it('adds 15M execution-zone discovery only beneath a 1H or 4H thesis', () => {
+        const ctx = getContext();
+        expect(ctx.executionTimeframesForNarrative({ timeframe: '4H', execution_timeframe: '1H' })).toEqual(['1H', '15M']);
+        expect(ctx.executionTimeframesForNarrative({ timeframe: '1H', execution_timeframe: '1H' })).toEqual(['1H', '15M']);
+        expect(ctx.executionTimeframesForNarrative({ timeframe: '15M', execution_timeframe: '15M' })).toEqual(['15M']);
+    });
+
     it('keeps a consumed CRT entry recorded while creating a fresh post-signal FVG opportunity', () => {
         const ctx = getContext();
         const history = freshExecutionFixture();
