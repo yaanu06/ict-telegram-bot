@@ -10872,7 +10872,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         const ctx = getContext();
         const replay = rawReplay();
         const packet = aiPacketForReplay(ctx, replay);
-        expect(packet).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V6.3');
+        expect(packet).toContain('MARKET_PACK_SCHEMA_VERSION=MARKET_PACK_SCHEMA_V1');
         expect(packet).toContain('RAW_TIMEFRAMES=1D,4H,1H,15M,5M');
         expect(packet).toContain('CANDLE_LIMIT_PER_TIMEFRAME=1D:60,4H:120,1H:120,15M:96,5M:96');
         for (const [timeframe, limit] of Object.entries(limits)) {

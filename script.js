@@ -20754,7 +20754,7 @@ function buildRawCandleAiPacket({ source = {}, symbol, price, precision = 2, asO
     ];
     const lines = [
         '=== AI TRADING PACKET: RAW CANDLE AI ===',
-        'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V6.3',
+        'MARKET_PACK_SCHEMA_VERSION=MARKET_PACK_SCHEMA_V1',
         'V2_STRATEGY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'AUTHORITY_MODE=' + STRATEGY_MODE_RAW_CANDLE_AI,
         'DETERMINISTIC_POI_ENGINE=DISABLED',
@@ -21255,10 +21255,14 @@ function buildRawCandleAiFacts(source = {}, symbol, metadata = {}, asOfMs = Date
     const providerSymbol = provider === 'TVKIT' ? getTvkitSymbol(symbol) : (typeof getProviderSymbol === 'function' ? getProviderSymbol(symbol) : 'UNKNOWN');
     const news = checkHighImpactNews(symbol);
     const newsActive = news?.inNewsWindow === true;
-    const newsKnown = news && typeof news === 'object' && (news.warning || news.event || news.name || news.time);
+    const newsUnavailable = /unavailable|unknown/i.test(String(news?.warning || news?.status || ''));
+    const newsKnown = !newsUnavailable && news && typeof news === 'object' && (news.warning || news.event || news.name || news.time);
     const bid = quote.bid ?? quote.b;
     const ask = quote.ask ?? quote.a;
-    const spread = quote.spread ?? (Number.isFinite(Number(bid)) && Number.isFinite(Number(ask)) ? Math.abs(Number(ask) - Number(bid)) : null);
+    const quotedSpread = Number(quote.spread);
+    const spread = Number.isFinite(Number(bid)) && Number.isFinite(Number(ask))
+        ? Math.abs(Number(ask) - Number(bid))
+        : Number.isFinite(quotedSpread) && quotedSpread > 0 ? quotedSpread : null;
     const atrValue = timeframe => {
         const candles = history[timeframe] || [];
         return candles.length >= 15 ? atr(candles, 14) : null;
@@ -21280,6 +21284,7 @@ function buildRawCandleAiFacts(source = {}, symbol, metadata = {}, asOfMs = Date
         'BID=' + rawCandleAiFactValue(bid, precision),
         'ASK=' + rawCandleAiFactValue(ask, precision),
         'SPREAD=' + rawCandleAiFactValue(spread, precision),
+        'SPREAD_STATUS=' + (spread == null ? 'UNKNOWN' : 'KNOWN'),
         'NEWS_WINDOW=' + (newsActive ? 'ACTIVE' : newsKnown ? 'NONE' : 'UNKNOWN') + (newsActive || newsKnown ? ' (' + String(news?.event || news?.name || news?.warning || 'UNKNOWN') + ', ' + String(news?.time || news?.event_time || 'UNKNOWN') + ')' : ''),
         'SESSION_NAME=' + clock.session_window,
         'SESSION_WINDOW_UTC=' + clock.session_window,
@@ -21365,7 +21370,7 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     const levelValue = value => value == null ? 'NONE' : rawTextPacketFormatNumber(value, precision);
     const lines = [
         '=== TIMEFRAME DATA ONLY ===',
-          'PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V6.3',
+          'MARKET_PACK_SCHEMA_VERSION=MARKET_PACK_SCHEMA_V1',
         'SYMBOL=' + symbol,
         'SERVER_TIME_UTC=' + serverClock.utc,
         'MARKET_STATUS=' + rawTextMarketPackMarketStatus(referenceAudit),
@@ -22022,11 +22027,9 @@ async function buildCurrentAiMarketPack() {
             `- Generated UTC: ${generatedAt}`,
             '- Candle policy: CLOSED_ONLY',
             '',
-            '## Current Ghost Machine Strategy',
+            '## Manual ChatGPT Strategy Contract',
             '',
-            '~~~python',
             strategyText.trim(),
-            '~~~',
             '',
             '## Raw Closed Timeframe Data',
             '',
@@ -22086,7 +22089,7 @@ async function sendAiMarketPackToTelegram() {
                 init_data: initData,
                 document_base64: marketPackBase64(new TextEncoder().encode(pack.markdown)),
                 filename: pack.filename,
-                caption: `Ghost Machine AI Market Pack - ${pack.symbol}. Upload this single Markdown file to DeepSeek.`
+                caption: `Ghost Machine Market Pack | ${pack.symbol} | manual ChatGPT review | closed candles only`
             })
         });
         let result = {};
