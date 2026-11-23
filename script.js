@@ -21462,6 +21462,8 @@ async function appendScanObservation(signal = {}, replay = {}) {
     if (readManualScanLog().some(record => record.scan_id === scanId)) return;
     try {
         const symbol = normalizeCanonicalMarketSymbol(replay.pair || signal.pair || pair);
+        const latestClosed = rawTextPacketClosedCandles(replay, '5M', rawTextPacketTimestamp(replay.scan_as_of) || Date.now()).at(-1);
+        if (latestClosed) monitorManualPendingRecords(symbol, latestClosed, rawTextPacketTimestamp(replay.scan_as_of) || Date.now());
         const packet = buildRawTextMarketAnalysisPacket({ signal, replay });
         const facts = buildRawCandleAiFacts(replay, symbol, replay.symbol_metadata || {}, rawTextPacketTimestamp(replay.scan_as_of) || Date.now());
         const fact = name => String(facts.find(line => String(line).startsWith(name + '=')) || '').slice(name.length + 1).split(' ')[0] || null;
@@ -21573,6 +21575,37 @@ function evaluateManualPendingOutcome(record = {}, candle = {}, nowMs = Date.now
     const tpHit = Number.isFinite(tp1) && (buy ? high >= tp1 : low <= tp1);
     // Conservative rule: an entry/stop/target conflict in one closed candle is a stop.
     return { ...record, outcome: stopHit ? 'SL_HIT' : tpHit ? 'TP1_HIT' : 'FILLED', filled_at: new Date(timestamp).toISOString(), closed_at: stopHit || tpHit ? new Date(timestamp).toISOString() : null };
+}
+
+const MANUAL_ALERT_KEYS = 'ict_manual_alert_keys_v1';
+function readManualAlertKeys() { try { return new Set(JSON.parse(localStorage.getItem(MANUAL_ALERT_KEYS) || '[]')); } catch { return new Set(); } }
+function persistManualAlertKey(key) { const keys = readManualAlertKeys(); keys.add(key); try { localStorage.setItem(MANUAL_ALERT_KEYS, JSON.stringify([...keys].slice(-1000))); } catch {} }
+
+async function notifyManualOutcome(record, candle) {
+    const event = String(record.outcome || '');
+    if (!['CANCELLED_ZONE_CONSUMED', 'CANCELLED_DOL_TAPPED', 'UNFILLED_EXPIRED', 'FILLED', 'TP1_HIT', 'SL_HIT'].includes(event)) return;
+    const key = `${record.scan_id}:${event}`;
+    if (readManualAlertKeys().has(key)) return;
+    const initData = String(window.Telegram?.WebApp?.initData || '');
+    if (!initData || !getProxyBaseUrl()) return;
+    const time = rawTextPacketTimestamp(candle?.t ?? candle?.time ?? candle?.timestamp);
+    const text = `${record.symbol} ${record.action || 'MANUAL'} | ${event}\nEntry: ${record.entry ?? 'UNKNOWN'} | Closed candle: ${Number.isFinite(time) ? new Date(time).toISOString() : 'UNKNOWN'}`;
+    try {
+        const response = await fetch(`${getProxyBaseUrl()}/api/telegram/notify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ init_data: initData, text }) });
+        if (response.ok) persistManualAlertKey(key);
+    } catch (error) { console.warn('[MANUAL_ALERT]', error); }
+}
+
+function monitorManualPendingRecords(symbol, candle, nowMs = Date.now()) {
+    const records = readManualScanLog(); let changed = false;
+    const updated = records.map(record => {
+        if (record.symbol !== symbol || record.outcome !== 'PENDING') return record;
+        const next = evaluateManualPendingOutcome(record, candle, nowMs);
+        if (next.outcome !== record.outcome) { changed = true; void notifyManualOutcome(next, candle); }
+        return next;
+    });
+    if (changed) { try { localStorage.setItem(MANUAL_SCAN_LOG_KEY, JSON.stringify(updated.slice(-MANUAL_SCAN_LOG_CAP))); } catch (error) { console.warn('[MANUAL_SCAN_LOG]', error); } }
+    return updated;
 }
 
 function fallbackCopyPlainText(packetText) {
