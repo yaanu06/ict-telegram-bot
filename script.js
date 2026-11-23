@@ -21462,14 +21462,18 @@ async function logManualAiResult() {
     if (!packet) { if (status) status.textContent = 'Run a completed scan first.'; return; }
     const replay = packet.replay || {};
     const facts = buildRawCandleAiFacts(replay, packet.symbol, replay.symbol_metadata || {}, rawTextPacketTimestamp(replay.scan_as_of) || Date.now());
+    const fact = name => {
+        const line = facts.find(item => String(item).startsWith(name + '='));
+        return line ? String(line).slice(name.length + 1).split(' ')[0] : null;
+    };
     const value = key => result?.[key] ?? null;
     const record = {
         scan_id: `MANUAL:${currentScanArtifact?.scan_id || replay.snapshot_id || Date.now()}`,
         generated_at: new Date().toISOString(), symbol: packet.symbol,
         provider: getMarketDataProvider(), asset_class: getAssetClass(packet.symbol),
         prompt_contract_version: 'RAW_CANDLE_AI_V4.0', packet_sha256: await sha256Text(packet.text),
-        quote_age_seconds: null, quote_stale: null, session_name: null, news_window: null,
-        atr_1h: null, atr_4h: null, action: String(value('action') || 'UNREVIEWED').toUpperCase(),
+        quote_age_seconds: fact('QUOTE_AGE_SECONDS'), quote_stale: fact('QUOTE_STALE'), session_name: fact('SESSION_NAME'), news_window: fact('NEWS_WINDOW'),
+        atr_1h: fact('ATR_1H'), atr_4h: fact('ATR_4H'), action: String(value('action') || 'UNREVIEWED').toUpperCase(),
         reason_code: value('reason_code'), entry: value('entry'), stop_loss: value('stop_loss'),
         tp1: value('tp1'), tp2: value('tp2'), tp3: value('tp3'), risk: value('risk'), rr_tp1: value('rr_tp1'),
         confidence: value('confidence'), poi_zone_low: value('poi_zone_low'), poi_zone_high: value('poi_zone_high'),
@@ -21485,6 +21489,30 @@ async function logManualAiResult() {
 function exportManualScanLog() {
     const blob = new Blob([JSON.stringify(readManualScanLog(), null, 2)], { type: 'application/json;charset=utf-8' });
     const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'manual-scan-log.json'; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+}
+
+// Manual records are monitored only with a supplied closed candle. This pure
+// helper deliberately has no provider, broker, or notification side effect.
+function evaluateManualPendingOutcome(record = {}, candle = {}, nowMs = Date.now()) {
+    if (record.outcome !== 'PENDING' || candle?.is_closed === false || candle?.forming === true) return record;
+    const n = value => Number.isFinite(Number(value)) ? Number(value) : null;
+    const close = n(candle.c ?? candle.close), high = n(candle.h ?? candle.high), low = n(candle.l ?? candle.low);
+    const entry = n(record.entry), stop = n(record.stop_loss), tp1 = n(record.tp1), zoneLow = n(record.poi_zone_low), zoneHigh = n(record.poi_zone_high), dol = n(record.dol_level);
+    const timestamp = rawTextPacketTimestamp(candle.t ?? candle.time ?? candle.timestamp);
+    if (![close, high, low, entry].every(Number.isFinite) || !Number.isFinite(timestamp)) return record;
+    const buy = String(record.action).toUpperCase() === 'BUY_LIMIT';
+    const zoneConsumed = Number.isFinite(zoneLow) && Number.isFinite(zoneHigh) && (buy ? close < zoneLow : close > zoneHigh);
+    if (zoneConsumed) return { ...record, outcome: 'CANCELLED_ZONE_CONSUMED', closed_at: new Date(timestamp).toISOString() };
+    const dolTapped = Number.isFinite(dol) && (buy ? high >= dol : low <= dol);
+    if (dolTapped) return { ...record, outcome: 'CANCELLED_DOL_TAPPED', closed_at: new Date(timestamp).toISOString() };
+    const created = Date.parse(record.generated_at || '');
+    if (Number.isFinite(created) && nowMs - created > Number(record.expiry_hours || 24) * 3600000) return { ...record, outcome: 'UNFILLED_EXPIRED', closed_at: new Date(nowMs).toISOString() };
+    const filled = buy ? low <= entry : high >= entry;
+    if (!filled) return record;
+    const stopHit = Number.isFinite(stop) && (buy ? low <= stop : high >= stop);
+    const tpHit = Number.isFinite(tp1) && (buy ? high >= tp1 : low <= tp1);
+    // Conservative rule: an entry/stop/target conflict in one closed candle is a stop.
+    return { ...record, outcome: stopHit ? 'SL_HIT' : tpHit ? 'TP1_HIT' : 'FILLED', filled_at: new Date(timestamp).toISOString(), closed_at: stopHit || tpHit ? new Date(timestamp).toISOString() : null };
 }
 
 function fallbackCopyPlainText(packetText) {
