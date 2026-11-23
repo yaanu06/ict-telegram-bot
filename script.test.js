@@ -690,15 +690,19 @@ describe('strategy entry lifecycle', () => {
 });
 
 describe('manual market-pack prompt lint', () => {
-    const strategy = fs.readFileSync(path.join(__dirname, 'ghost-machine-strategy.py'), 'utf8');
-    test('has one readable V4 contract and excludes retired automatic-parser language', () => {
+    const strategy = fs.readFileSync(path.join(__dirname, 'ghost-machine-strategy.md'), 'utf8');
+    test('has one readable V5 pending-limit contract with correct limit semantics', () => {
         expect((strategy.match(/PROMPT_CONTRACT_VERSION=/g) || [])).toHaveLength(1);
-        expect(strategy).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V4.0');
+        expect(strategy).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_PENDING_LIMIT_V5.0');
         for (const banned of ['V2.7.2', 'DEEPSEEK JSON', 'parser will enforce', 'restored verbatim', 'JSON-only', 'MUST output']) {
             expect(strategy).not.toContain(banned);
         }
         expect(strategy).not.toContain('proximal=BOTTOM edge for BUY_LIMIT');
-        expect(strategy).toMatch(/bullish zone below price:\s*proximal=TOP\/HIGH edge/i);
+        expect(strategy).toMatch(/bullish zone below price:\s*BUY_LIMIT at the TOP\/HIGH edge/i);
+        expect(strategy).toMatch(/bearish zone above price:\s*SELL_LIMIT at the BOTTOM\/LOW edge/i);
+        expect(strategy).toMatch(/1D first/i);
+        expect(strategy).toContain('"action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE"');
+        expect(strategy).toContain('pending limit');
     });
 });
 
@@ -888,8 +892,9 @@ describe('market-pack swing-map regressions', () => {
 });
 
 describe('generated AI Market Pack metadata', () => {
-    test('embeds factual metadata and raw candles without the strategy prompt', async () => {
+    test('embeds the pending-limit strategy once plus factual metadata and raw candles', async () => {
         const ctx = getContext();
+        const strategy = fs.readFileSync(path.join(__dirname, 'ghost-machine-strategy.md'), 'utf8');
         const packetText = [
             'MARKET_PACK_SCHEMA_VERSION=TEST.1',
             'MARKET_STATUS=OPEN',
@@ -901,9 +906,12 @@ describe('generated AI Market Pack metadata', () => {
             'CANDLE_5M=2026-01-07T11:55:00Z,100,101,99,100'
         ].join('\n');
         ctx.getCurrentRawMarketAnalysisPacket = () => ({ symbol: 'BTC/USD', text: packetText });
+        ctx.fetch = jest.fn(async () => ({ ok: true, text: async () => strategy }));
         const pack = await ctx.buildCurrentAiMarketPack();
-        expect(pack.markdown).not.toContain('Manual ChatGPT Strategy Contract');
-        expect(pack.markdown).not.toContain('PROMPT_CONTRACT_VERSION=');
+        expect((pack.markdown.match(/PROMPT_CONTRACT_VERSION=/g) || [])).toHaveLength(1);
+        expect(pack.markdown).toContain('## Pending Limit Strategy Contract');
+        expect(pack.markdown).toContain('RAW_CANDLE_PENDING_LIMIT_V5.0');
+        expect(packetText).not.toContain('PROMPT_CONTRACT_VERSION=');
         expect(pack.markdown).toContain('Schema: TEST.1');
         expect(pack.markdown).toContain('Market status: OPEN (CONFIGURED_SESSION)');
         expect(pack.markdown).toContain('~~~text');

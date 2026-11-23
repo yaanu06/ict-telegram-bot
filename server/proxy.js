@@ -29,7 +29,7 @@ const PUBLIC_ASSETS = {
     '/kronos-client.js': { file: 'kronos-client.js', type: 'application/javascript; charset=utf-8' },
     '/script.js': { file: 'script.js', type: 'application/javascript; charset=utf-8' },
     '/style.css': { file: 'style.css', type: 'text/css; charset=utf-8' },
-    '/ghost-machine-strategy.py': { file: 'ghost-machine-strategy.py', type: 'text/x-python; charset=utf-8' }
+    '/ghost-machine-strategy.md': { file: 'ghost-machine-strategy.md', type: 'text/markdown; charset=utf-8' }
 };
 
 function normalizeSymbol(value) {

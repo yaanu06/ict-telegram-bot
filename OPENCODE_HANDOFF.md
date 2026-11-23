@@ -16,8 +16,8 @@ Latest pushed commit at handoff: `f5eba7e Verify per-pair market pack facts`
 ## Completed and pushed
 
 - Replaced the delivered legacy V2.7.2/DeepSeek JSON strategy with the single
-  readable manual-review contract in `ghost-machine-strategy.py`:
-  `PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V4.0`.
+  readable pending-limit contract in `ghost-machine-strategy.md`:
+  `PROMPT_CONTRACT_VERSION=RAW_CANDLE_PENDING_LIMIT_V5.0`.
 - Removed the duplicate packet prompt version headers; data builders use
   `MARKET_PACK_SCHEMA_VERSION=MARKET_PACK_SCHEMA_V1`.
 - Added prompt lint coverage; it rejects retired V2.7.2/DeepSeek/parser and
@@ -42,8 +42,8 @@ Latest pushed commit at handoff: `f5eba7e Verify per-pair market pack facts`
 
 - `script.js`: packet builders (`buildRawCandleAiPacket`,
   `buildRawTextMarketAnalysisPacket`), FACTS/SWING MAP, logging, monitor.
-- `ghost-machine-strategy.py`: the only delivered strategy contract.
-- `index.html`: manual result form and resting limit list.
+- `ghost-machine-strategy.md`: the active pending-limit strategy contract embedded in the pack.
+- `index.html`: pack send controls (manual AI result log UI removed).
 - `server/proxy.js`: `/api/telegram/notify` route.
 - `script.test.js`, `server/proxy.test.js`: regression coverage.
 - `PLAN.md`: original repair order.
