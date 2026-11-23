@@ -21505,6 +21505,27 @@ function exportManualScanLogCsv() {
     const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'manual-scan-log.csv'; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
 
+function manualScanLogMetrics(records = readManualScanLog()) {
+    const list = Array.isArray(records) ? records : [];
+    const count = predicate => list.filter(predicate).length;
+    const terminal = count(record => ['FILLED', 'UNFILLED_EXPIRED', 'CANCELLED_ZONE_CONSUMED', 'CANCELLED_DOL_TAPPED'].includes(record.outcome));
+    const filled = count(record => record.outcome === 'FILLED');
+    const postFill = count(record => ['FILLED', 'TP1_HIT', 'SL_HIT', 'PARTIAL_THEN_SL', 'MANUAL_CLOSE'].includes(record.outcome));
+    const rValues = list.map(record => Number(record.result_R)).filter(Number.isFinite);
+    const group = key => Object.fromEntries([...new Set(list.map(record => record[key] || 'UNKNOWN'))].map(value => [value, count(record => (record[key] || 'UNKNOWN') === value)]));
+    return {
+        total: list.length,
+        reason_code_distribution: group('reason_code'),
+        by_symbol: group('symbol'),
+        by_prompt_contract_version: group('prompt_contract_version'),
+        fill_rate: terminal ? filled / terminal : null,
+        post_fill_tp1_rate: postFill ? count(record => record.outcome === 'TP1_HIT') / postFill : null,
+        sl_rate: postFill ? count(record => ['SL_HIT', 'PARTIAL_THEN_SL'].includes(record.outcome)) / postFill : null,
+        expectancy_r: rValues.length ? rValues.reduce((sum, value) => sum + value, 0) / rValues.length : null,
+        citations_verified_rate: list.length ? count(record => record.citations_verified === 'YES') / list.length : null
+    };
+}
+
 // Manual records are monitored only with a supplied closed candle. This pure
 // helper deliberately has no provider, broker, or notification side effect.
 function evaluateManualPendingOutcome(record = {}, candle = {}, nowMs = Date.now()) {

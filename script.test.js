@@ -718,6 +718,20 @@ describe('symbol-aware market-pack defaults', () => {
     });
 });
 
+describe('manual scan measurement', () => {
+    test('calculates fill and expectancy metrics without inferring results', () => {
+        const ctx = getContext();
+        const metrics = ctx.manualScanLogMetrics([
+            { outcome: 'FILLED', result_R: 1, citations_verified: 'YES', reason_code: 'NO_HTF_POI', symbol: 'BTC/USD', prompt_contract_version: 'RAW_CANDLE_AI_V4.0' },
+            { outcome: 'UNFILLED_EXPIRED', result_R: 0, citations_verified: 'UNSET', reason_code: 'RR_TOO_LOW', symbol: 'EUR/USD', prompt_contract_version: 'RAW_CANDLE_AI_V4.0' },
+            { outcome: 'SL_HIT', result_R: -1, citations_verified: 'YES', reason_code: 'RR_TOO_LOW', symbol: 'BTC/USD', prompt_contract_version: 'RAW_CANDLE_AI_V4.0' }
+        ]);
+        expect(metrics.fill_rate).toBeCloseTo(0.5);
+        expect(metrics.expectancy_r).toBeCloseTo(0);
+        expect(metrics.citations_verified_rate).toBeCloseTo(2 / 3);
+    });
+});
+
 describe('one-file AI Market Pack', () => {
     test('builds a PDF containing chart imagery, strategy text, and raw timeframe data', () => {
         const ctx = getContext();
