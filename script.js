@@ -21285,6 +21285,7 @@ function buildRawCandleAiFacts(source = {}, symbol, metadata = {}, asOfMs = Date
         : ['FOREX', 'METAL'].includes(assetClass)
             ? '22:00-23:00 UTC gaps and weekends may be broker rollover or market closure.'
             : 'Market gaps may reflect market hours, weekends, holidays, halts, or provider data gaps.';
+    const sessionWindows = { ASIA: '00:00-07:00 UTC', LONDON: '07:00-11:00 UTC', OVERLAP: '11:00-12:00 UTC', NEW_YORK: '12:00-15:00 UTC' };
     return [
         '=== FACTS — CLOSED-CANDLE DERIVED ===',
         'GENERATED_AT=' + generatedAt,
@@ -21310,7 +21311,7 @@ function buildRawCandleAiFacts(source = {}, symbol, metadata = {}, asOfMs = Date
         'SPREAD_STATUS=' + (spread == null ? 'UNKNOWN' : 'KNOWN'),
         'NEWS_WINDOW=' + (newsActive ? 'ACTIVE' : newsKnown ? 'NONE' : 'UNKNOWN') + (newsActive || newsKnown ? ' (' + String(news?.event || news?.name || news?.warning || 'UNKNOWN') + ', ' + String(news?.time || news?.event_time || 'UNKNOWN') + ')' : ''),
         'SESSION_NAME=' + clock.session_window,
-        'SESSION_WINDOW_UTC=' + clock.session_window,
+        'SESSION_WINDOW_UTC=' + (sessionWindows[clock.session_window] || 'UNKNOWN'),
         'ATR_1D=' + rawCandleAiFactValue(atrValue('1D'), precision) + ' (closed-candle ATR, period 14)',
         'ATR_4H=' + rawCandleAiFactValue(atrValue('4H'), precision) + ' (closed-candle ATR, period 14)',
         'ATR_1H=' + rawCandleAiFactValue(atrValue('1H'), precision) + ' (closed-candle ATR, period 14)',
@@ -21389,13 +21390,7 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
     const macroLevels = buildRawCandleAiMacroLevels(source, asOfMs);
     const macroContextLevels = [
         { name: 'PREVIOUS_DAY_HIGH', value: macroLevels.previous_day_high },
-        { name: 'PREVIOUS_DAY_LOW', value: macroLevels.previous_day_low },
-        { name: 'ASIA_HIGH', value: macroLevels.asia_high },
-        { name: 'ASIA_LOW', value: macroLevels.asia_low },
-        { name: 'LONDON_HIGH', value: macroLevels.london_high },
-        { name: 'LONDON_LOW', value: macroLevels.london_low },
-        { name: 'NEW_YORK_HIGH', value: macroLevels.new_york_high },
-        { name: 'NEW_YORK_LOW', value: macroLevels.new_york_low }
+        { name: 'PREVIOUS_DAY_LOW', value: macroLevels.previous_day_low }
     ];
     const levelValue = value => value == null ? 'NONE' : rawTextPacketFormatNumber(value, precision);
     const lines = [
