@@ -1080,6 +1080,7 @@ function init() {
     if(el('sendAiPackBtn')) el('sendAiPackBtn').addEventListener('click', sendAiMarketPackToTelegram);
     if(el('logAiResultBtn')) el('logAiResultBtn').addEventListener('click', logManualAiResult);
     if(el('exportScanLogBtn')) el('exportScanLogBtn').addEventListener('click', exportManualScanLog);
+    if(el('exportScanLogCsvBtn')) el('exportScanLogCsvBtn').addEventListener('click', exportManualScanLogCsv);
     if(el('updateKeysBtn')) el('updateKeysBtn').addEventListener('click', showSetup);
     if(el('saveSetupBtn')) el('saveSetupBtn').addEventListener('click', saveCurrentSetup);
     if(el('recentList')) el('recentList').addEventListener('click', handleRecentClick);
@@ -21282,6 +21283,9 @@ function buildRawCandleAiFacts(source = {}, symbol, metadata = {}, asOfMs = Date
         'QUOTE_STALE=' + (quoteAge == null ? 'UNKNOWN' : quoteAge > 60 ? 'YES' : 'NO'),
         'CURRENT_PRICE_FIELD=CLOSED_5M_CLOSE',
         'CURRENT_PRICE=' + rawCandleAiFactValue(canonicalReferencePrice, precision),
+        'REFERENCE_PRICE=' + rawCandleAiFactValue(canonicalReferencePrice, precision),
+        'REFERENCE_PRICE_FIELD=CLOSED_5M_CLOSE',
+        'REFERENCE_AGE_SECONDS=' + (quoteAge == null ? 'UNKNOWN' : quoteAge),
         'DATA_PROVIDER=' + provider,
         'PROVIDER_SYMBOL=' + (providerSymbol || 'UNKNOWN'),
         'ASSET_CLASS=' + assetClass,
@@ -21313,6 +21317,7 @@ function buildRawCandleAiFacts(source = {}, symbol, metadata = {}, asOfMs = Date
         level('PREVIOUS_WEEK_HIGH', previousWeek?.high, previousWeekKey, 'week UTC'),
         level('PREVIOUS_WEEK_LOW', previousWeek?.low, previousWeekKey, 'week UTC'),
         'GAP_NOTE=' + gapNote,
+        'DATA_WARNINGS=' + ([quoteAge == null ? 'QUOTE_TIME_UNKNOWN' : quoteAge > 60 ? 'QUOTE_STALE' : null, newsUnavailable ? 'NEWS_STATUS_UNKNOWN' : null, spread == null ? 'SPREAD_UNKNOWN' : null].filter(Boolean).join('|') || 'NONE'),
         ''
     ];
 }
@@ -21489,6 +21494,15 @@ async function logManualAiResult() {
 function exportManualScanLog() {
     const blob = new Blob([JSON.stringify(readManualScanLog(), null, 2)], { type: 'application/json;charset=utf-8' });
     const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'manual-scan-log.json'; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+}
+
+function exportManualScanLogCsv() {
+    const records = readManualScanLog();
+    const keys = [...new Set(records.flatMap(record => Object.keys(record)))];
+    const quote = value => '"' + String(value ?? '').replace(/"/g, '""') + '"';
+    const csv = [keys.join(','), ...records.map(record => keys.map(key => quote(record[key])).join(','))].join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'manual-scan-log.csv'; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
 
 // Manual records are monitored only with a supplied closed candle. This pure
