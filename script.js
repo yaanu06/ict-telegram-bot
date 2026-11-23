@@ -1081,12 +1081,17 @@ function init() {
     if(el('logAiResultBtn')) el('logAiResultBtn').addEventListener('click', logManualAiResult);
     if(el('exportScanLogBtn')) el('exportScanLogBtn').addEventListener('click', exportManualScanLog);
     if(el('exportScanLogCsvBtn')) el('exportScanLogCsvBtn').addEventListener('click', exportManualScanLogCsv);
+    if(el('manualPendingList')) el('manualPendingList').addEventListener('click', event => {
+        const id = event.target?.dataset?.manualScanId;
+        if (id) cancelManualPendingRecord(id);
+    });
     if(el('updateKeysBtn')) el('updateKeysBtn').addEventListener('click', showSetup);
     if(el('saveSetupBtn')) el('saveSetupBtn').addEventListener('click', saveCurrentSetup);
     if(el('recentList')) el('recentList').addEventListener('click', handleRecentClick);
     if(el('journalList')) el('journalList').addEventListener('click', handleJournalClick);
     renderRecents();
     renderJournal();
+    renderManualPendingRecords();
     if(el('pairSelect')) el('pairSelect').addEventListener('change', function(e) {
         pair = e.target.value;
         resetPairState();
@@ -21453,8 +21458,31 @@ function appendManualScanLog(record) {
         const records = readManualScanLog();
         records.push(record);
         localStorage.setItem(MANUAL_SCAN_LOG_KEY, JSON.stringify(records.slice(-MANUAL_SCAN_LOG_CAP)));
+        renderManualPendingRecords();
         return true;
     } catch (error) { console.warn('[MANUAL_SCAN_LOG]', error); return false; }
+}
+
+function renderManualPendingRecords() {
+    const container = document.getElementById('manualPendingList');
+    if (!container) return;
+    const pending = readManualScanLog().filter(record => record.outcome === 'PENDING' && String(record.action).includes('LIMIT'));
+    if (!pending.length) { container.textContent = 'No resting manual limits.'; return; }
+    const now = Date.now();
+    container.innerHTML = pending.map(record => {
+        const age = Number.isFinite(Date.parse(record.generated_at)) ? Math.max(0, Math.floor((now - Date.parse(record.generated_at)) / 3600000)) : 'UNKNOWN';
+        const expiry = Number(record.expiry_hours) || 24;
+        return `<div class="recent-item"><strong>${record.symbol} ${record.action}</strong><br>Entry ${record.entry ?? 'UNKNOWN'} · age ${age}h/${expiry}h · zone ${record.poi_zone_low ?? 'UNKNOWN'}-${record.poi_zone_high ?? 'UNKNOWN'} · DOL ${record.dol_level ?? 'UNKNOWN'}<br><button class="cancel-btn" data-manual-scan-id="${String(record.scan_id).replace(/"/g, '&quot;')}">Cancel</button></div>`;
+    }).join('');
+}
+
+function cancelManualPendingRecord(scanId) {
+    try {
+        const records = readManualScanLog().map(record => record.scan_id === scanId && record.outcome === 'PENDING'
+            ? { ...record, outcome: 'MANUAL_CLOSE', closed_at: new Date().toISOString() } : record);
+        localStorage.setItem(MANUAL_SCAN_LOG_KEY, JSON.stringify(records.slice(-MANUAL_SCAN_LOG_CAP)));
+        renderManualPendingRecords();
+    } catch (error) { console.warn('[MANUAL_SCAN_LOG]', error); }
 }
 
 async function appendScanObservation(signal = {}, replay = {}) {
