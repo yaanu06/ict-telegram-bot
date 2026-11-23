@@ -21230,7 +21230,7 @@ function buildVerifiedMathFacts(source = {}, symbol, referencePrice, precision, 
 }
 
 function rawCandleAiFactValue(value, precision = 2) {
-    return Number.isFinite(Number(value)) ? rawTextPacketFormatNumber(value, precision) : 'UNKNOWN';
+    return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)) ? rawTextPacketFormatNumber(value, precision) : 'UNKNOWN';
 }
 
 function rawCandleAiFactDate(value) {
@@ -21253,6 +21253,11 @@ function buildRawCandleAiFacts(source = {}, symbol, metadata = {}, asOfMs = Date
     const clock = rawCandleAiServerClock(asOfMs);
     const settings = getMarketSettings(symbol, metadata || {});
     const assetClass = metadata.asset_class || getAssetClass(symbol);
+    const metadataTick = Number(metadata.tick_size);
+    const metadataPrecision = Number(metadata.price_precision);
+    const knownDefault = Object.prototype.hasOwnProperty.call(SYMBOLS, symbol);
+    const displayTick = Number.isFinite(metadataTick) && metadataTick > 0 ? metadataTick : knownDefault ? settings?.pipSize : null;
+    const displayPrecision = Number.isInteger(metadataPrecision) && metadataPrecision >= 0 ? metadataPrecision : knownDefault ? settings?.prec : null;
     const provider = getMarketDataProvider();
     const providerSymbol = provider === 'TVKIT' ? getTvkitSymbol(symbol) : (typeof getProviderSymbol === 'function' ? getProviderSymbol(symbol) : 'UNKNOWN');
     const news = checkHighImpactNews(symbol);
@@ -21292,8 +21297,8 @@ function buildRawCandleAiFacts(source = {}, symbol, metadata = {}, asOfMs = Date
         'MARKET_HOURS=' + (assetClass === 'CRYPTO' ? '24/7' : 'UNKNOWN'),
         'TIMEZONE_BASIS=UTC',
         'VOLUME_RELIABLE=' + (hasRealVolume(symbol, metadata) ? 'YES' : 'NO'),
-        'PRICE_PRECISION=' + (Number.isFinite(Number(settings?.prec)) ? settings.prec : 'UNKNOWN'),
-        'TICK_SIZE=' + rawCandleAiFactValue(settings?.pipSize, precision),
+        'PRICE_PRECISION=' + (Number.isFinite(displayPrecision) ? displayPrecision : 'UNKNOWN'),
+        'TICK_SIZE=' + rawCandleAiFactValue(displayTick, precision),
         'BID=' + rawCandleAiFactValue(bid, precision),
         'ASK=' + rawCandleAiFactValue(ask, precision),
         'SPREAD=' + rawCandleAiFactValue(spread, precision),

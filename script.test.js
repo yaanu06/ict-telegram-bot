@@ -716,6 +716,15 @@ describe('symbol-aware market-pack defaults', () => {
         expect(ctx.getMarketSettings(symbol)).toEqual(expect.objectContaining({ pipSize: tick, prec: precision }));
         expect(ctx.hasRealVolume(symbol)).toBe(volume);
     });
+
+    test('does not fabricate tick, precision, spread, or news for unresolved symbols', () => {
+        const ctx = getContext();
+        const facts = ctx.buildRawCandleAiFacts({ quote: {}, history: {} }, 'CUSTOM:UNRESOLVED', {}, Date.parse('2026-01-01T00:00:00Z'), 2, null).join('\n');
+        expect(facts).toContain('TICK_SIZE=UNKNOWN');
+        expect(facts).toContain('PRICE_PRECISION=UNKNOWN');
+        expect(facts).toContain('SPREAD=UNKNOWN');
+        expect(facts).toContain('NEWS_WINDOW=UNKNOWN');
+    });
 });
 
 describe('manual scan measurement', () => {
