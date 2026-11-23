@@ -212,6 +212,18 @@ async function sendTelegramDocument(fetchImpl, botToken, payload) {
     return result;
 }
 
+async function sendTelegramAlert(fetchImpl, botToken, chatId, text) {
+    const response = await fetchImpl(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text: String(text).slice(0, 3500), disable_web_page_preview: true })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (response.status < 200 || response.status >= 300 || payload.ok !== true) {
+        const error = new Error('Telegram alert could not be delivered'); error.statusCode = 502; throw error;
+    }
+    return payload;
+}
+
 function upstreamHeaders(apiKey) {
     return { 'Accept': 'application/json', 'User-Agent': 'ict-telegram-bot-proxy/1.0', 'X-Proxy-Request': 'server' };
 }
@@ -368,6 +380,7 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
     // addition to the per-client abuse limit.
     const allowTwelveDataGlobal = createRateLimiter({ now, maxRequests: Number(env.PROXY_TWELVE_GLOBAL_MAX_REQUESTS || DEFAULT_TWELVE_MAX_REQUESTS) });
     const allowTvkit = createRateLimiter({ now, maxRequests: Number(env.PROXY_TVKIT_MAX_REQUESTS || DEFAULT_TVKIT_MAX_REQUESTS) });
+    const allowTelegramAlert = createRateLimiter({ now, maxRequests: Number(env.PROXY_TELEGRAM_ALERT_MAX_REQUESTS || 20) });
     // tvdatafeed-enhanced runs each provider call in its own worker thread and
     // can service the five scan timeframes concurrently. Forwarding them in
     // parallel removes the old serial-queue latency while keeping the same
@@ -613,6 +626,19 @@ function createProxyServer({ env = process.env, fetchImpl = globalThis.fetch, no
                     chat_id: auth.chat_id
                 }, origin);
             }
+            if (req.method === 'POST' && requestUrl.pathname === '/api/telegram/notify') {
+                if (!telegramBotToken) return jsonResponse(res, 503, { error: 'Telegram delivery is not configured' }, origin);
+                const raw = await readBody(req); let body;
+                try { body = JSON.parse(raw || '{}'); } catch { return jsonResponse(res, 400, { error: 'request body must be valid JSON' }, origin); }
+                const auth = validateTelegramInitData(body?.init_data, telegramBotToken, now());
+                if (!auth.valid) return jsonResponse(res, 401, { error: auth.reason }, origin);
+                const text = String(body?.text || '');
+                if (!text || text.length > 3500) return jsonResponse(res, 400, { error: 'alert text is required and limited to 3500 characters' }, origin);
+                const rate = allowTelegramAlert(String(auth.user_id || auth.chat_id));
+                if (!rate.allowed) return jsonResponse(res, 429, { error: 'Telegram alert rate limit exceeded' }, origin);
+                const result = await sendTelegramAlert(fetchImpl, telegramBotToken, auth.chat_id, text);
+                return jsonResponse(res, 200, { sent: true, message_id: result?.result?.message_id || null }, origin);
+            }
             if ((req.method === 'POST' || req.method === 'GET') && requestUrl.pathname === '/api/audit') {
                 const expectedToken = req.method === 'GET' ? configuredAuditReadToken : configuredAuditToken;
                 if (!store || !expectedToken || req.headers['x-audit-token'] !== expectedToken) return jsonResponse(res, 401, { error: 'audit authentication required' }, origin);
@@ -643,4 +669,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { MAX_BODY_BYTES, DEFAULT_UPSTREAM_TIMEOUT_MS, MAX_UPSTREAM_TIMEOUT_MS, DEFAULT_AI_PROVIDER, DEFAULT_GEMINI_MODEL, DEFAULT_KRONOS_MODEL, TIMEFRAME_INTERVALS, normalizeSymbol, normalizeAIProvider, geminiContents, geminiRequestBody, normalizeGeminiResponse, sanitizeProviderError, validateMarketRequest, validateTelegramInitData, telegramDocumentMultipart, sendTelegramDocument, createRateLimiter, createProxyServer };
+module.exports = { MAX_BODY_BYTES, DEFAULT_UPSTREAM_TIMEOUT_MS, MAX_UPSTREAM_TIMEOUT_MS, DEFAULT_AI_PROVIDER, DEFAULT_GEMINI_MODEL, DEFAULT_KRONOS_MODEL, TIMEFRAME_INTERVALS, normalizeSymbol, normalizeAIProvider, geminiContents, geminiRequestBody, normalizeGeminiResponse, sanitizeProviderError, validateMarketRequest, validateTelegramInitData, telegramDocumentMultipart, sendTelegramDocument, sendTelegramAlert, createRateLimiter, createProxyServer };
