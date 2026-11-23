@@ -17,10 +17,45 @@ function toMs(value) {
     return Number.isFinite(parsed) ? parsed : NaN;
 }
 
-function symbolPrecision(symbol, price) {
-    if (/XAU|XAG|BTC|ETH/i.test(symbol)) return Number(price) >= 1000 ? 2 : 4;
-    if (/USD|EUR|GBP|JPY|AUD|NZD|CAD|CHF/i.test(symbol)) return 5;
-    return 2;
+function symbolPrecision(symbol, price, symbolMetadata = {}) {
+    return symbolExecutionSemantics(symbol, symbolMetadata).precision;
+}
+
+const FIAT_CODES = new Set(['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD', 'HKD', 'SGD', 'NOK', 'SEK', 'CNH', 'CNY', 'MXN', 'ZAR', 'TRY', 'PLN']);
+const CRYPTO_CODES = new Set(['BTC', 'ETH', 'SOL', 'XRP', 'ADA', 'DOGE', 'LTC', 'BCH', 'BNB', 'AVAX', 'DOT', 'LINK']);
+const ASSET_DEFAULT_PRECISION = Object.freeze({ METAL: 2, FOREX: 5, CRYPTO: 2, EQUITY: 4, INDEX: 4, UNKNOWN: 6 });
+const ASSET_DEFAULT_TICK = Object.freeze({ METAL: 0.1, FOREX: 0.0001, CRYPTO: 0.01, EQUITY: 0.01, INDEX: 0.01, UNKNOWN: null });
+
+function assetClassForSymbol(symbol) {
+    const normalized = String(symbol || '').toUpperCase().replace(/\s+/g, '');
+    const instrument = normalized.includes(':') ? normalized.split(':').pop() : normalized;
+    const [base, quote] = instrument.split('/');
+    if (CRYPTO_CODES.has(base) || instrument.endsWith('/USDT')) return 'CRYPTO';
+    if (instrument.startsWith('XAU') || instrument.startsWith('XAG')) return 'METAL';
+    if (base && quote) return FIAT_CODES.has(base) && FIAT_CODES.has(quote) ? 'FOREX' : 'UNKNOWN';
+    if (/^[A-Z][A-Z0-9._-]{0,11}$/.test(instrument)) {
+        return /\d/.test(instrument) || /^(US30|NAS100|SPX500|GER40|UK100|JP225)$/.test(instrument) ? 'INDEX' : 'EQUITY';
+    }
+    return 'UNKNOWN';
+}
+
+// Shared symbol-aware execution semantics for paper/backtest paths. Unknown
+// provider metadata stays null/UNKNOWN instead of becoming a fabricated tick.
+function symbolExecutionSemantics(symbol, symbolMetadata = {}) {
+    const assetClass = symbolMetadata.asset_class || assetClassForSymbol(symbol);
+    const explicitPrecision = Number(symbolMetadata.price_precision);
+    const explicitTick = Number(symbolMetadata.tick_size);
+    const explicitCommission = Number(symbolMetadata.commission_per_unit);
+    const explicitSlippage = Number(symbolMetadata.slippage_estimate);
+    const explicitExpiry = Number(symbolMetadata.expiry_hours);
+    return {
+        assetClass,
+        precision: Number.isInteger(explicitPrecision) && explicitPrecision >= 0 ? explicitPrecision : (ASSET_DEFAULT_PRECISION[assetClass] ?? 2),
+        tickSize: Number.isFinite(explicitTick) && explicitTick > 0 ? explicitTick : (ASSET_DEFAULT_TICK[assetClass] ?? null),
+        commissionPerUnit: Number.isFinite(explicitCommission) ? explicitCommission : null,
+        slippageEstimate: Number.isFinite(explicitSlippage) ? explicitSlippage : null,
+        expiryHours: Number.isFinite(explicitExpiry) && explicitExpiry > 0 ? explicitExpiry : 24
+    };
 }
 
 function canonicalCandle(bar, timeframe) {
@@ -363,6 +398,9 @@ function simulateCandidate(candidate, series, options = {}) {
     let ambiguous = false;
     const targetReachedAt = [null, null, null];
     const ambiguity = options.ambiguity || 'exclude';
+    const requestedExpiry = Number(options.expiryAtMs ?? candidate.expires_at_ms ?? candidate.valid_until_ms);
+    const expiryAtMs = Number.isFinite(requestedExpiry) ? requestedExpiry : null;
+    let expired = false;
     const directionalMove = (price) => direction === 'BUY' ? price - entry : entry - price;
     const hit = (bar, level) => direction === 'BUY' ? Number(bar.h) >= level : Number(bar.l) <= level;
     const stopHit = bar => direction === 'BUY' ? Number(bar.l) <= stop : Number(bar.h) >= stop;
@@ -371,6 +409,7 @@ function simulateCandidate(candidate, series, options = {}) {
         const source = executionSeries[executionIndex];
         const bar = canonicalCandle(source, executionTimeframe);
         if (!filled) {
+            if (expiryAtMs != null && bar.close_time_ms > expiryAtMs) { expired = true; break; }
             if (!entryHit(bar)) continue;
             filled = true;
             fillMs = bar.close_time_ms;
@@ -421,7 +460,7 @@ function simulateCandidate(candidate, series, options = {}) {
             break;
         }
     }
-    if (!filled) outcome = 'NOT_FILLED';
+    if (!filled) outcome = expired ? 'EXPIRED' : 'NOT_FILLED';
     else if (outcome === 'NOT_FILLED') outcome = highestTarget ? `TP${highestTarget}` : 'OPEN_AT_END';
     const rResult = outcome === 'SL' ? -1 : outcome === 'TP1' ? 1 : outcome === 'TP2' ? 2 : outcome === 'TP3' ? 3 : 0;
     return {
@@ -603,4 +642,4 @@ function replayHistory({ context, series, symbol, from, to, precision, replayTim
     };
 }
 
-module.exports = { LIVE_TIMEFRAMES, STRATEGY_TIMEFRAMES, visibleBars, makeBlocks, makeBlocksReference, replayClocks, simulateCandidate, replayHistory, symbolPrecision, normalizeOptionalPrice, normalizeCandidateTargets, validateCandidateDirection };
+module.exports = { LIVE_TIMEFRAMES, STRATEGY_TIMEFRAMES, visibleBars, makeBlocks, makeBlocksReference, replayClocks, simulateCandidate, replayHistory, symbolPrecision, symbolExecutionSemantics, assetClassForSymbol, normalizeOptionalPrice, normalizeCandidateTargets, validateCandidateDirection };

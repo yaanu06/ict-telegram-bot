@@ -139,6 +139,50 @@ describe('market and AI proxy boundary', () => {
         } finally { await new Promise(resolve => server.close(resolve)); }
     });
 
+    test('delivers an authenticated manual alert only to the verified sender chat', async () => {
+        const nowMs = Date.parse('2026-11-15T10:00:00Z');
+        const botToken = '123456:test-token';
+        const initData = telegramInitData(botToken, nowMs, 445566);
+        const fetchImpl = jest.fn(async () => ({
+            status: 200,
+            json: async () => ({ ok: true, result: { message_id: 7 } })
+        }));
+        const server = createProxyServer({ env: { TELEGRAM_BOT_TOKEN: botToken, PROXY_MAX_REQUESTS: '20' }, fetchImpl, now: () => nowMs });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const response = await request(server, 'POST', '/api/telegram/notify', { 'content-type': 'application/json' }, JSON.stringify({
+                init_data: initData,
+                text: 'BTC/USD BUY_LIMIT | TP1_HIT\nR: 2.00R'
+            }));
+            expect(response).toMatchObject({ status: 200, body: { sent: true, message_id: 7 } });
+            expect(fetchImpl).toHaveBeenCalledTimes(1);
+            const [url, options] = fetchImpl.mock.calls[0];
+            expect(url).toBe(`https://api.telegram.org/bot${botToken}/sendMessage`);
+            const body = JSON.parse(options.body);
+            expect(body.chat_id).toBe(445566);
+            expect(body.text).toContain('TP1_HIT');
+            expect(body.disable_web_page_preview).toBe(true);
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
+    });
+
+    test('rejects an oversized Markdown document before calling Telegram', async () => {
+        const nowMs = Date.parse('2026-11-15T10:00:00Z');
+        const botToken = '123456:test-token';
+        const initData = telegramInitData(botToken, nowMs, 778899);
+        const fetchImpl = jest.fn();
+        const server = createProxyServer({ env: { TELEGRAM_BOT_TOKEN: botToken, PROXY_MAX_REQUESTS: '20' }, fetchImpl, now: () => nowMs });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const oversized = JSON.stringify({ init_data: initData, document_base64: 'A'.repeat(4.5 * 1024 * 1024), filename: 'huge.md' });
+            const response = await request(server, 'POST', '/api/telegram/send-ai-pack', { 'content-type': 'application/json' }, oversized);
+            expect(response.status).toBe(413);
+            expect(response.body.code).toBe('REQUEST_BODY_TOO_LARGE');
+            expect(fetchImpl).not.toHaveBeenCalled();
+        } finally { await new Promise(resolve => server.close(resolve)); }
+    });
+
     test('applies a separate Twelve Data budget below the provider plan limit', async () => {
         const fetchImpl = jest.fn(async () => ({ status: 200, text: async () => JSON.stringify({ price: '1.25', timestamp: '2026-09-19T10:00:00Z' }) }));
         const server = createProxyServer({

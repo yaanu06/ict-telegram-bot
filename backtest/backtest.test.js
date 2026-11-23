@@ -1,7 +1,7 @@
 'use strict';
 
 const { normalizeBars, validateRawRows, validateSeries } = require('./data-provider');
-const { simulateCandidate, replayClocks, visibleBars, validateCandidateDirection } = require('./replay');
+const { simulateCandidate, replayClocks, visibleBars, validateCandidateDirection, symbolPrecision, symbolExecutionSemantics } = require('./replay');
 const { summarize } = require('./metrics');
 const { loadStrategyContext, analyzeVisibleHistory } = require('./strategy-adapter');
 
@@ -140,6 +140,43 @@ describe('historical backtest data and execution replay', () => {
         const candidate = { candidate_id: 'none', side: 'BUY', timeframe: '1h', first_knowable_ms: 0, entry: 90, stop_loss: 85, tp1: 95, tp2: 100, tp3: 105, risk: 5 };
         const result = simulateCandidate(candidate, { '5m': [bar(300000, 101, 99, 100)] }, { executionTimeframe: '5m' });
         expect(result.final_outcome).toBe('NOT_FILLED');
+    });
+
+    test('symbol-aware execution semantics keep provider metadata authoritative', () => {
+        expect(symbolExecutionSemantics('XAU/USD')).toMatchObject({ assetClass: 'METAL', precision: 2, tickSize: 0.1, expiryHours: 24 });
+        expect(symbolExecutionSemantics('BTC/USD')).toMatchObject({ assetClass: 'CRYPTO', precision: 2, tickSize: 0.01 });
+        expect(symbolExecutionSemantics('EUR/USD')).toMatchObject({ assetClass: 'FOREX', precision: 5, tickSize: 0.0001 });
+        expect(symbolExecutionSemantics('NASDAQ:AAPL')).toMatchObject({ assetClass: 'EQUITY', precision: 4, tickSize: 0.01 });
+        expect(symbolExecutionSemantics('SPX500')).toMatchObject({ assetClass: 'INDEX', precision: 4 });
+        expect(symbolExecutionSemantics('XAU/USD', { price_precision: 3, tick_size: 0.5, commission_per_unit: 0.02, expiry_hours: 8 }))
+            .toMatchObject({ precision: 3, tickSize: 0.5, commissionPerUnit: 0.02, expiryHours: 8 });
+        expect(symbolExecutionSemantics('CUSTOM:ZZZ', { asset_class: 'UNKNOWN' })).toMatchObject({ tickSize: null, precision: 6 });
+        expect(symbolPrecision('XAU/USD', 5)).toBe(2);
+        expect(symbolPrecision('BTC/USD', 500)).toBe(2);
+        expect(symbolPrecision('AUD/USD', 1)).toBe(5);
+        expect(symbolPrecision('NASDAQ:AAPL', 1)).toBe(4);
+        expect(symbolPrecision('XAU/USD', 2000, { price_precision: 3 })).toBe(3);
+    });
+
+    test('never fills a candidate on candles visible only before first_knowable_ms', () => {
+        const candidate = { candidate_id: 'no-lookahead', side: 'BUY', timeframe: '5m', first_knowable_ms: 600000, entry: 100, stop_loss: 95, tp1: 105, tp2: null, tp3: null, risk: 5 };
+        // The 300000 bar would have filled and hit TP1, but it closed before the
+        // candidate was knowable. The 600000 bar is the forming bar itself and is
+        // also excluded; only the 900000 bar may act.
+        const series = { '5m': [bar(300000, 200, 99, 100), bar(600000, 200, 99, 100), bar(900000, 102, 101, 101)] };
+        const result = simulateCandidate(candidate, series, { executionTimeframe: '5m' });
+        expect(result.fill_time_ms).toBeNull();
+        expect(result.final_outcome).toBe('NOT_FILLED');
+        const laterFill = simulateCandidate({ ...candidate, first_knowable_ms: 600000 }, { '5m': [bar(300000, 200, 99, 100), bar(900000, 101, 99, 100), bar(1200000, 106, 99, 105)] }, { executionTimeframe: '5m' });
+        expect(laterFill.fill_time_ms).toBe(1200000);
+        expect(laterFill.final_outcome).toBe('TP1');
+    });
+
+    test('expires an unfilled pending order at the supplied expiry without filling after it', () => {
+        const candidate = { candidate_id: 'expiring', side: 'BUY', timeframe: '5m', first_knowable_ms: 0, entry: 90, stop_loss: 85, tp1: 95, expires_at_ms: 800000, risk: 5 };
+        const result = simulateCandidate(candidate, { '5m': [bar(300000, 101, 99, 100), bar(600000, 106, 99, 105)] }, { executionTimeframe: '5m' });
+        expect(result.fill_time_ms).toBeNull();
+        expect(result.final_outcome).toBe('EXPIRED');
     });
 
     test('metrics preserve descriptive baseline counts', () => {

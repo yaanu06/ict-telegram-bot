@@ -733,6 +733,294 @@ describe('symbol-aware market-pack defaults', () => {
     });
 });
 
+const memoryStorage = (seed = {}) => {
+    const store = new Map(Object.entries(seed));
+    return {
+        getItem: key => store.has(key) ? store.get(key) : null,
+        setItem: (key, value) => { store.set(key, String(value)); },
+        removeItem: key => { store.delete(key); },
+        _store: store
+    };
+};
+
+const packDurations = { '1D': 86400000, '4H': 14400000, '1H': 3600000, '15M': 900000, '5M': 300000 };
+const packCounts = { '1D': 60, '4H': 60, '1H': 80, '15M': 40, '5M': 40 };
+const buildPackHistory = asOf => Object.fromEntries(Object.entries(packCounts).map(([timeframe, count]) => {
+    const duration = packDurations[timeframe];
+    const lastOpen = asOf - duration;
+    const bars = Array.from({ length: count }, (_, index) => {
+        const t = lastOpen - (count - 1 - index) * duration;
+        const base = 100 + Math.sin(index / 3) * 2;
+        return { t, o: base, h: base + 1, l: base - 1, c: base + 0.4, v: 1000, is_closed: true };
+    });
+    return [timeframe, bars];
+}));
+const packReplay = ({ pair, metadata = {}, asOf, price = 100, quoteTime = null }) => {
+    const history = buildPackHistory(asOf);
+    return {
+        pair,
+        scan_as_of: new Date(asOf).toISOString(),
+        quote: { price, quote_time: quoteTime || new Date(asOf).toISOString(), quote_source: 'QUOTE' },
+        history,
+        symbol_metadata: metadata
+    };
+};
+
+describe('market-pack FACTS contract', () => {
+    const asOf = Date.parse('2026-01-07T12:00:00Z');
+    test('emits market status, provenance, weekly range and reference-age semantics', () => {
+        const ctx = getContext();
+        const replay = packReplay({ pair: 'NASDAQ:AAPL', metadata: { asset_class: 'EQUITY', tick_size: 0.01, price_precision: 2, metadata_source: 'PROVIDER' }, asOf });
+        const facts = ctx.buildRawCandleAiFacts(replay, 'NASDAQ:AAPL', replay.symbol_metadata, asOf, 2, replay.history['5M'].at(-1).c).join('\n');
+        expect(facts).toContain('ASSET_CLASS=EQUITY');
+        expect(facts).toContain('MARKET_STATUS=OPEN');
+        expect(facts).toContain('MARKET_STATUS_SOURCE=ASSET_CALENDAR');
+        expect(facts).toContain('MARKET_HOURS=UNKNOWN');
+        expect(facts).toContain('PROVIDER_METADATA_SOURCE=PROVIDER');
+        expect(facts).toContain('PROVIDER_METADATA_COMPLETE=UNKNOWN');
+        expect(facts).toContain('SESSION_RELEVANCE=CASH_SESSION_OPEN');
+        expect(facts).toMatch(/PREVIOUS_WEEK_RANGE=\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2}/);
+        expect(facts).toContain('REFERENCE_PRICE_FIELD=CLOSED_5M_CLOSE');
+        expect(facts).toContain('REFERENCE_AGE_SOURCE=CLOSED_5M_CLOSE');
+        expect(facts).toContain('REFERENCE_AGE_SECONDS=0');
+        expect(facts).toContain('QUOTE_AGE_SOURCE=QUOTE_TIME');
+    });
+
+    test('keeps unknown metadata unknown instead of fabricating defaults', () => {
+        const ctx = getContext();
+        const replay = packReplay({ pair: 'CUSTOM:ZZZ', metadata: {}, asOf });
+        const facts = ctx.buildRawCandleAiFacts(replay, 'CUSTOM:ZZZ', {}, asOf, 2, replay.history['5M'].at(-1).c).join('\n');
+        expect(facts).toContain('TICK_SIZE=UNKNOWN');
+        expect(facts).toContain('PRICE_PRECISION=UNKNOWN');
+        expect(facts).toContain('PROVIDER_METADATA_SOURCE=UNKNOWN');
+        expect(facts).toContain('MARKET_HOURS=UNKNOWN');
+        expect(facts).toContain('SPREAD=UNKNOWN');
+        expect(facts).toContain('DATA_WARNINGS=');
+    });
+
+    test('reports a stale provider quote while the closed-candle reference stays aligned', () => {
+        const ctx = getContext();
+        const replay = packReplay({ pair: 'BTC/USD', metadata: { asset_class: 'CRYPTO', tick_size: 0.01, price_precision: 2 }, asOf, quoteTime: new Date(asOf - 300000).toISOString() });
+        const facts = ctx.buildRawCandleAiFacts(replay, 'BTC/USD', replay.symbol_metadata, asOf, 2, replay.history['5M'].at(-1).c).join('\n');
+        expect(facts).toContain('QUOTE_STALE=YES');
+        expect(facts).toContain('QUOTE_AGE_SECONDS=300');
+        expect(facts).toContain('DATA_WARNINGS=');
+        expect(facts).toContain('QUOTE_STALE');
+        expect(facts).toContain('REFERENCE_AGE_SECONDS=0');
+        expect(facts).toContain('MARKET_HOURS=24/7');
+        expect(facts).toContain('SESSION_RELEVANCE=24/7_NO_SESSION_GATE');
+    });
+});
+
+describe('market-pack per-pair fixture matrix', () => {
+    const asOf = Date.parse('2026-01-07T12:00:00Z');
+    test.each([
+        ['NASDAQ:AAPL', { asset_class: 'EQUITY', tick_size: 0.01, price_precision: 2 }, 'EQUITY', 'TICK_SIZE=0.01'],
+        ['SPX500', { asset_class: 'INDEX', tick_size: 0.1, price_precision: 2 }, 'INDEX', 'TICK_SIZE=0.10'],
+        ['BINANCE:BTC/USD', { asset_class: 'CRYPTO', tick_size: 0.01, price_precision: 2 }, 'CRYPTO', 'TICK_SIZE=0.01']
+    ])('%s builds a complete closed-candle pack', (pair, metadata, assetClass, tickLine) => {
+        const ctx = getContext();
+        const replay = packReplay({ pair, metadata, asOf });
+        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(packet).toContain('MARKET_PACK_SCHEMA_VERSION=MARKET_PACK_SCHEMA_V1');
+        expect(packet).toContain('SYMBOL=' + pair);
+        expect(packet).toContain('ASSET_CLASS=' + assetClass);
+        expect(packet).toContain('PROVIDER_SYMBOL=' + pair);
+        expect(packet).toContain(tickLine);
+        expect(packet).toContain('PRICE_PRECISION=2');
+        expect(packet).toContain('MARKET_STATUS=');
+        expect(packet).toMatch(/MARKET_STATUS_SOURCE=\w+/);
+        expect(packet).toMatch(/PREVIOUS_WEEK_RANGE=\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2}/);
+        expect(packet).toContain('CANDLE_POLICY=CLOSED_ONLY');
+        expect(packet).toContain('DATA_COUNTS=1D:60,4H:60,1H:80,15M:40,5M:40');
+    });
+
+    test('custom symbol with unknown metadata keeps tick/precision unresolved', () => {
+        const ctx = getContext();
+        const replay = packReplay({ pair: 'CUSTOM:ZZZ', metadata: {}, asOf });
+        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        expect(packet).toContain('TICK_SIZE=UNKNOWN');
+        expect(packet).toContain('PRICE_PRECISION=UNKNOWN');
+        expect(packet).toContain('PROVIDER_METADATA_SOURCE=UNKNOWN');
+        expect(packet).toContain('MARKET_HOURS=UNKNOWN');
+        expect(packet).toContain('CANDLE_POLICY=CLOSED_ONLY');
+    });
+});
+
+describe('market-pack swing-map regressions', () => {
+    const base = Date.parse('2026-01-05T00:00:00Z');
+    const asOf = base + 11 * 3600000;
+    const row = (index, o, h, l, close) => ({ t: base + index * 3600000, o, h, l, c: close, v: 1000, is_closed: true });
+    const swingRows = () => [
+        row(0, 100, 101, 99, 100), row(1, 100, 102, 99.5, 101), row(2, 101, 101.5, 98, 99),
+        row(3, 99, 102, 99, 101), row(4, 101, 103, 100, 102), row(5, 102, 105, 101, 104),
+        row(6, 104, 104.5, 102, 103), row(7, 103, 104, 101.5, 102), row(8, 102, 103, 100, 101),
+        row(9, 101, 102, 99.5, 100), row(10, 100, 101, 98.5, 99)
+    ];
+    const locationFor = (price, rows = swingRows()) => {
+        const ctx = getContext();
+        const source = { history: { '1H': rows } };
+        const lines = ctx.buildRawCandleAiSwingMap(source, asOf, 2, price);
+        return lines.join('\n');
+    };
+    test.each([
+        [106, 'OUTSIDE_RANGE'], [97, 'OUTSIDE_RANGE'], [104, 'PREMIUM'], [99, 'DISCOUNT'], [101.5, 'EQUILIBRIUM']
+    ])('classifies price %s as %s within the active dealing range', (price, expected) => {
+        const text = locationFor(price);
+        expect(text).toContain('DEALING_RANGE=');
+        expect(text).toContain('LOCATION:' + expected);
+    });
+
+    test('never uses a broken swing as an active dealing-range bound', () => {
+        const ctx = getContext();
+        const rows = swingRows();
+        rows[9] = row(9, 101, 106, 101, 106);
+        rows[10] = row(10, 106, 105, 100, 104);
+        const source = { history: { '1H': rows } };
+        const text = ctx.buildRawCandleAiSwingMap(source, asOf + 3600000, 2, 104).join('\n');
+        const section = text.split('\nTF=1H\n')[1].split('\nTF=15M')[0];
+        expect(section).toContain('PRICE=105.00');
+        expect(section).toContain('STATE=BROKEN');
+        expect(section).not.toContain('DEALING_RANGE=');
+        expect(section).toContain('HISTORICAL_RANGE=');
+        expect(section).toContain('LOCATION:UNKNOWN');
+    });
+});
+
+describe('generated AI Market Pack metadata', () => {
+    test('carries exactly one prompt contract version and factual caption metadata', () => {
+        const ctx = getContext();
+        const strategy = fs.readFileSync(path.join(__dirname, 'ghost-machine-strategy.py'), 'utf8');
+        const asOf = Date.parse('2026-01-07T12:00:00Z');
+        const replay = packReplay({ pair: 'BTC/USD', metadata: { asset_class: 'CRYPTO', tick_size: 0.01, price_precision: 2 }, asOf, quoteTime: new Date(asOf - 300000).toISOString() });
+        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
+        const markdown = ['# Ghost Machine AI Market Pack', strategy.trim(), '## Raw Closed Timeframe Data', packet.trim()].join('\n');
+        expect((markdown.match(/PROMPT_CONTRACT_VERSION=/g) || [])).toHaveLength(1);
+        expect(packet).not.toContain('PROMPT_CONTRACT_VERSION=');
+        expect(packet).toContain('MARKET_STATUS=');
+        expect(packet).toContain('DATA_WARNINGS=');
+        expect(packet).toContain('QUOTE_STALE');
+    });
+});
+
+describe('manual scan-log persistence and outcome editing', () => {
+    test('round-trips JSON records and evicts beyond the bounded cap', () => {
+        const ctx = getContext();
+        ctx.localStorage = memoryStorage();
+        const records = [
+            { scan_id: 's1', outcome: 'PENDING', action: 'BUY_LIMIT', symbol: 'BTC/USD', result_R: null },
+            { scan_id: 's2', outcome: 'FILLED', action: 'SELL_LIMIT', symbol: 'EUR/USD', result_R: null }
+        ];
+        records.forEach(record => expect(ctx.appendManualScanLog(record)).toBe(true));
+        expect(JSON.parse(ctx.localStorage.getItem('ict_manual_scan_log_v1'))).toEqual(records);
+        for (let index = 0; index < 505; index++) ctx.appendManualScanLog({ scan_id: 'e' + index, outcome: 'PENDING' });
+        const stored = JSON.parse(ctx.localStorage.getItem('ict_manual_scan_log_v1'));
+        expect(stored).toHaveLength(500);
+        expect(stored[0].scan_id).toBe('e5');
+        expect(stored.at(-1).scan_id).toBe('e504');
+    });
+
+    test('serializes JSON and quoted CSV that round-trip the same records', () => {
+        const ctx = getContext();
+        const records = [
+            { scan_id: 'csv-1', outcome: 'TP1_HIT', symbol: 'BTC/USD', notes: 'quote " and comma, here', result_R: 2 },
+            { scan_id: 'csv-2', outcome: 'SL_HIT', symbol: 'EUR/USD', notes: null, result_R: -1 }
+        ];
+        const json = JSON.parse(ctx.manualScanLogJson(records));
+        expect(json).toEqual(records.map(record => ({ ...record })));
+        const csv = ctx.manualScanLogCsv(records);
+        const lines = csv.split('\r\n');
+        expect(lines[0].split(',')).toEqual(['scan_id', 'outcome', 'symbol', 'notes', 'result_R']);
+        expect(lines[1]).toContain('"quote "" and comma, here"');
+        expect(lines[2]).toContain('"csv-2"');
+        expect(lines[2]).toContain('""');
+        expect(ctx.manualScanLogCsv([])).toBe('');
+    });
+
+    test('resolves a manual outcome with an explicit result R and timestamps', () => {
+        const ctx = getContext();
+        ctx.localStorage = memoryStorage();
+        ctx.appendManualScanLog({ scan_id: 'm1', outcome: 'PENDING', action: 'BUY_LIMIT', symbol: 'BTC/USD', entry: 100, stop_loss: 98, tp1: 104 });
+        expect(ctx.resolveManualScanOutcome('m1', 'TP1_HIT', 2.5)).toBe(true);
+        const record = JSON.parse(ctx.localStorage.getItem('ict_manual_scan_log_v1'))[0];
+        expect(record).toMatchObject({ outcome: 'TP1_HIT', outcome_source: 'MANUAL', result_R: 2.5, result_R_source: 'MANUAL' });
+        expect(record.closed_at).toEqual(expect.any(String));
+        expect(record.updated_at).toEqual(expect.any(String));
+        expect(ctx.resolveManualScanOutcome('m1', 'BOGUS')).toBe(false);
+    });
+});
+
+describe('manual monitor integration', () => {
+    const asOf = Date.parse('2026-01-07T12:00:00Z');
+    const flush = () => new Promise(resolve => setImmediate(resolve));
+    const monitorContext = storage => {
+        const ctx = getContext();
+        ctx.localStorage = storage || memoryStorage();
+        ctx.window.Telegram = { WebApp: { initData: 'signed-init-data' } };
+        ctx.window.__ICT_PROXY_BASE_URL__ = 'https://proxy.test';
+        ctx.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ sent: true }) }));
+        return ctx;
+    };
+
+    test('fills from a closed candle, derives excursions/R, persists state and alerts once', async () => {
+        const ctx = monitorContext();
+        const record = { scan_id: 'mon-1', outcome: 'PENDING', action: 'BUY_LIMIT', symbol: 'BTC/USD', entry: 100, stop_loss: 98, tp1: 104, poi_zone_low: 99, poi_zone_high: 101, dol_level: 110, generated_at: new Date(asOf - 3600000).toISOString(), expiry_hours: 24 };
+        ctx.appendManualScanLog(record);
+        const candle = { t: asOf, o: 101, h: 104.5, l: 99, c: 104, is_closed: true };
+        const updated = ctx.monitorManualPendingRecords('BTC/USD', candle, asOf);
+        const result = updated.find(item => item.scan_id === 'mon-1');
+        expect(result).toMatchObject({ outcome: 'TP1_HIT', result_R: 2, result_R_source: 'MONITOR', mfe_R: 2.25, mae_R: 0.5 });
+        expect(result.filled_at).toEqual(new Date(asOf).toISOString());
+        expect(result.closed_at).toEqual(new Date(asOf).toISOString());
+        expect(JSON.parse(ctx.localStorage.getItem('ict_manual_scan_log_v1')).find(item => item.scan_id === 'mon-1').outcome).toBe('TP1_HIT');
+        await flush();
+        expect(ctx.fetch).toHaveBeenCalledTimes(1);
+        const [url, options] = ctx.fetch.mock.calls[0];
+        expect(url).toBe('https://proxy.test/api/telegram/notify');
+        const body = JSON.parse(options.body);
+        expect(body.init_data).toBe('signed-init-data');
+        expect(body.text).toContain('BTC/USD BUY_LIMIT | TP1_HIT');
+        expect(body.text).toContain('R: 2.00R');
+        expect(body.text).toContain('MFE: 2.25R');
+        expect(body.text).toContain('Closed candle: ' + new Date(asOf).toISOString());
+    });
+
+    test('does not re-alert after a reload because the alert key persists', async () => {
+        const storage = memoryStorage();
+        const first = monitorContext(storage);
+        const record = { scan_id: 'mon-2', outcome: 'FILLED', action: 'BUY_LIMIT', symbol: 'BTC/USD', entry: 100, stop_loss: 98, tp1: 104, generated_at: new Date(asOf - 3600000).toISOString(), expiry_hours: 24 };
+        first.appendManualScanLog(record);
+        const candle = { t: asOf, o: 101, h: 104.5, l: 99, c: 104, is_closed: true };
+        first.monitorManualPendingRecords('BTC/USD', candle, asOf);
+        await flush();
+        expect(first.fetch).toHaveBeenCalledTimes(1);
+        const reloaded = monitorContext(storage);
+        const persisted = JSON.parse(storage.getItem('ict_manual_scan_log_v1'))[0];
+        await reloaded.notifyManualOutcome(persisted, candle);
+        await flush();
+        expect(reloaded.fetch).not.toHaveBeenCalled();
+    });
+
+    test('handles sell-side zone/DOL semantics and expiry', () => {
+        const ctx = monitorContext();
+        const sell = { outcome: 'PENDING', action: 'SELL_LIMIT', entry: 110, stop_loss: 112, tp1: 106, poi_zone_low: 109, poi_zone_high: 111, dol_level: 100, generated_at: new Date(asOf - 3600000).toISOString(), expiry_hours: 24 };
+        expect(ctx.evaluateManualPendingOutcome(sell, { t: asOf, h: 112, l: 110, c: 112, is_closed: true }, asOf).outcome).toBe('CANCELLED_ZONE_CONSUMED');
+        expect(ctx.evaluateManualPendingOutcome(sell, { t: asOf, h: 110.5, l: 99, c: 110, is_closed: true }, asOf).outcome).toBe('CANCELLED_DOL_TAPPED');
+        expect(ctx.evaluateManualPendingOutcome(sell, { t: asOf, h: 111, l: 107, c: 109, is_closed: true }, asOf).outcome).toBe('FILLED');
+        const expiring = { ...sell, action: 'BUY_LIMIT', entry: 90, stop_loss: 88, tp1: 95, poi_zone_low: 89, poi_zone_high: 91, dol_level: null, generated_at: new Date(asOf - 25 * 3600000).toISOString() };
+        const expired = ctx.evaluateManualPendingOutcome(expiring, { t: asOf, h: 101, l: 99, c: 100, is_closed: true }, asOf);
+        expect(expired.outcome).toBe('UNFILLED_EXPIRED');
+        expect(expired.closed_at).toBe(new Date(asOf).toISOString());
+    });
+
+    test('never monitors a forming candle', () => {
+        const ctx = monitorContext();
+        const record = { outcome: 'PENDING', action: 'BUY_LIMIT', entry: 100, stop_loss: 98, tp1: 104, poi_zone_low: 99, poi_zone_high: 101, generated_at: new Date(asOf - 3600000).toISOString(), expiry_hours: 24, scan_id: 'forming' };
+        expect(ctx.evaluateManualPendingOutcome(record, { t: asOf, h: 104.5, l: 99, c: 104, is_closed: false }, asOf).outcome).toBe('PENDING');
+        expect(ctx.evaluateManualPendingOutcome(record, { t: asOf, h: 104.5, l: 99, c: 104, forming: true }, asOf).outcome).toBe('PENDING');
+    });
+});
+
 describe('manual scan measurement', () => {
     test('calculates fill and expectancy metrics without inferring results', () => {
         const ctx = getContext();

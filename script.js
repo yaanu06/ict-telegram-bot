@@ -1083,7 +1083,14 @@ function init() {
     if(el('exportScanLogCsvBtn')) el('exportScanLogCsvBtn').addEventListener('click', exportManualScanLogCsv);
     if(el('manualPendingList')) el('manualPendingList').addEventListener('click', event => {
         const id = event.target?.dataset?.manualScanId;
-        if (id) cancelManualPendingRecord(id);
+        if (!id) return;
+        const outcome = event.target?.dataset?.manualOutcome;
+        if (outcome) {
+            const resultR = event.target.closest?.('.recent-item')?.querySelector?.('[data-manual-r]')?.value;
+            resolveManualScanOutcome(id, outcome, resultR === '' || resultR == null ? null : resultR);
+        } else {
+            cancelManualPendingRecord(id);
+        }
     });
     if(el('updateKeysBtn')) el('updateKeysBtn').addEventListener('click', showSetup);
     if(el('saveSetupBtn')) el('saveSetupBtn').addEventListener('click', saveCurrentSetup);
@@ -1092,6 +1099,7 @@ function init() {
     renderRecents();
     renderJournal();
     renderManualPendingRecords();
+    renderManualScanMetrics();
     if(el('pairSelect')) el('pairSelect').addEventListener('change', function(e) {
         pair = e.target.value;
         resetPairState();
@@ -21279,6 +21287,41 @@ function buildRawCandleAiFacts(source = {}, symbol, metadata = {}, asOfMs = Date
         const candles = history[timeframe] || [];
         return candles.length >= 15 ? atr(candles, 14) : null;
     };
+    const marketState = getMarketOpenState(symbol, {
+        ...(source.runtime_state?.quote_snapshot || {}),
+        ...(source.quote_snapshot || {}),
+        is_market_open: source.is_market_open ?? quote.is_market_open ?? quote.market_open,
+        market_open: source.market_open ?? quote.market_open,
+        session: metadata.session ?? source.session,
+        symbol_metadata: metadata,
+        asset_class: assetClass,
+        as_of_ms: asOfMs
+    });
+    const closed5m = history['5M'].at(-1) || null;
+    const closed5mOpenMs = closed5m ? rawTextPacketTimestamp(closed5m.t ?? closed5m.time ?? closed5m.timestamp) : null;
+    const closed5mCloseMs = Number.isFinite(closed5mOpenMs) ? closed5mOpenMs + TIMEFRAME_MS['5M'] : null;
+    const referenceMatchesClosed5m = !!closed5m && canonicalReferencePrice != null
+        && Number.isFinite(Number(closed5m.c))
+        && Math.abs(Number(canonicalReferencePrice) - Number(closed5m.c)) < Math.pow(10, -(precision + 2));
+    const referenceField = canonicalReferencePrice == null ? 'UNKNOWN'
+        : referenceMatchesClosed5m ? 'CLOSED_5M_CLOSE' : 'CALLER_SUPPLIED_PRICE';
+    const referenceTimeMs = referenceMatchesClosed5m ? closed5mCloseMs : quoteTimeMs;
+    const referenceAge = Number.isFinite(referenceTimeMs) ? Math.max(0, Math.floor((asOfMs - referenceTimeMs) / 1000)) : null;
+    const previousWeekEnd = previousWeekKey
+        ? new Date(Date.parse(previousWeekKey + 'T00:00:00Z') + 6 * 86400000).toISOString().slice(0, 10)
+        : null;
+    const metadataKeys = Object.keys(metadata || {}).filter(key => metadata[key] !== null && metadata[key] !== undefined);
+    const metadataSource = metadata.metadata_source
+        || (metadataKeys.length ? 'PROVIDER_OR_USER' : 'UNKNOWN');
+    const metadataComplete = typeof metadata.metadata_complete === 'boolean'
+        ? (metadata.metadata_complete ? 'YES' : 'NO') : 'UNKNOWN';
+    const marketHours = assetClass === 'CRYPTO' ? '24/7'
+        : metadata.session ? 'CONFIGURED_SESSION' : 'UNKNOWN';
+    const sessionRelevance = assetClass === 'CRYPTO' ? '24/7_NO_SESSION_GATE'
+        : ['FOREX', 'METAL'].includes(assetClass) ? clock.session_quality + ':' + clock.session_window
+            : ['EQUITY', 'INDEX'].includes(assetClass)
+                ? (marketState.is_market_open ? 'CASH_SESSION_OPEN' : 'CASH_SESSION_CLOSED')
+                : 'UNKNOWN';
     const level = (name, value, date, window) => name + '=' + rawCandleAiFactValue(value, precision) + ' (' + (date || 'UNKNOWN') + ', ' + window + ')';
     const gapNote = assetClass === 'CRYPTO'
         ? 'CRYPTO trades 24/7; gaps are provider/data gaps unless separately proven.'
@@ -21291,16 +21334,25 @@ function buildRawCandleAiFacts(source = {}, symbol, metadata = {}, asOfMs = Date
         'GENERATED_AT=' + generatedAt,
         'QUOTE_TIME=' + (Number.isFinite(quoteTimeMs) ? new Date(quoteTimeMs).toISOString() : 'UNKNOWN'),
         'QUOTE_AGE_SECONDS=' + (quoteAge == null ? 'UNKNOWN' : quoteAge),
+        'QUOTE_AGE_SOURCE=' + (Number.isFinite(quoteTimeMs) ? 'QUOTE_TIME' : 'UNKNOWN'),
         'QUOTE_STALE=' + (quoteAge == null ? 'UNKNOWN' : quoteAge > 60 ? 'YES' : 'NO'),
-        'CURRENT_PRICE_FIELD=CLOSED_5M_CLOSE',
+        'CURRENT_PRICE_FIELD=' + referenceField,
         'CURRENT_PRICE=' + rawCandleAiFactValue(canonicalReferencePrice, precision),
         'REFERENCE_PRICE=' + rawCandleAiFactValue(canonicalReferencePrice, precision),
-        'REFERENCE_PRICE_FIELD=CLOSED_5M_CLOSE',
-        'REFERENCE_AGE_SECONDS=' + (quoteAge == null ? 'UNKNOWN' : quoteAge),
+        'REFERENCE_PRICE_FIELD=' + referenceField,
+        'REFERENCE_TIME=' + (Number.isFinite(referenceTimeMs) ? new Date(referenceTimeMs).toISOString() : 'UNKNOWN'),
+        'REFERENCE_AGE_SECONDS=' + (referenceAge == null ? 'UNKNOWN' : referenceAge),
+        'REFERENCE_AGE_SOURCE=' + (Number.isFinite(referenceTimeMs) ? (referenceMatchesClosed5m ? 'CLOSED_5M_CLOSE' : 'QUOTE_TIME') : 'UNKNOWN'),
         'DATA_PROVIDER=' + provider,
         'PROVIDER_SYMBOL=' + (providerSymbol || 'UNKNOWN'),
+        'PROVIDER_METADATA_SOURCE=' + metadataSource,
+        'PROVIDER_METADATA_COMPLETE=' + metadataComplete,
         'ASSET_CLASS=' + assetClass,
-        'MARKET_HOURS=' + (assetClass === 'CRYPTO' ? '24/7' : 'UNKNOWN'),
+        'MARKET_STATUS=' + (marketState.is_market_open ? 'OPEN' : 'CLOSED'),
+        'MARKET_STATUS_SOURCE=' + String(marketState.source || 'UNKNOWN'),
+        'MARKET_HOURS=' + marketHours,
+        'MARKET_HOURS_SOURCE=' + (assetClass === 'CRYPTO' ? 'ASSET_CALENDAR' : metadata.session ? 'CONFIGURED_SESSION' : 'UNKNOWN'),
+        'SESSION_RELEVANCE=' + sessionRelevance,
         'TIMEZONE_BASIS=UTC',
         'VOLUME_RELIABLE=' + (hasRealVolume(symbol, metadata) ? 'YES' : 'NO'),
         'PRICE_PRECISION=' + (Number.isFinite(displayPrecision) ? displayPrecision : 'UNKNOWN'),
@@ -21327,8 +21379,9 @@ function buildRawCandleAiFacts(source = {}, symbol, metadata = {}, asOfMs = Date
         level('PREVIOUS_DAY_LOW', macro.previous_day_low, rawCandleAiFactDate(history['1D'].at(-1)?.t), '1D UTC'),
         level('PREVIOUS_WEEK_HIGH', previousWeek?.high, previousWeekKey, 'week UTC'),
         level('PREVIOUS_WEEK_LOW', previousWeek?.low, previousWeekKey, 'week UTC'),
+        'PREVIOUS_WEEK_RANGE=' + (previousWeekKey && previousWeekEnd ? previousWeekKey + '..' + previousWeekEnd : 'UNKNOWN'),
         'GAP_NOTE=' + gapNote,
-        'DATA_WARNINGS=' + ([quoteAge == null ? 'QUOTE_TIME_UNKNOWN' : quoteAge > 60 ? 'QUOTE_STALE' : null, newsUnavailable ? 'NEWS_STATUS_UNKNOWN' : null, spread == null ? 'SPREAD_UNKNOWN' : null].filter(Boolean).join('|') || 'NONE'),
+        'DATA_WARNINGS=' + ([quoteAge == null ? 'QUOTE_TIME_UNKNOWN' : quoteAge > 60 ? 'QUOTE_STALE' : null, referenceAge == null ? 'REFERENCE_TIME_UNKNOWN' : null, newsUnavailable ? 'NEWS_STATUS_UNKNOWN' : null, spread == null ? 'SPREAD_UNKNOWN' : null].filter(Boolean).join('|') || 'NONE'),
         ''
     ];
 }
@@ -21398,8 +21451,6 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
           'MARKET_PACK_SCHEMA_VERSION=MARKET_PACK_SCHEMA_V1',
         'SYMBOL=' + symbol,
         'SERVER_TIME_UTC=' + serverClock.utc,
-        'MARKET_STATUS=' + rawTextMarketPackMarketStatus(referenceAudit),
-        'MARKET_STATUS_SOURCE=' + String(referenceAudit.marketState?.source || 'UNKNOWN'),
         'SESSION_QUALITY=' + serverClock.session_quality,
         'SESSION_WINDOW=' + serverClock.session_window,
         'QUOTE_TIME=' + String(quote.quote_time || quote.current_price_time || 'UNKNOWN'),
@@ -21454,20 +21505,35 @@ function appendManualScanLog(record) {
         records.push(record);
         localStorage.setItem(MANUAL_SCAN_LOG_KEY, JSON.stringify(records.slice(-MANUAL_SCAN_LOG_CAP)));
         renderManualPendingRecords();
+        renderManualScanMetrics();
         return true;
     } catch (error) { console.warn('[MANUAL_SCAN_LOG]', error); return false; }
+}
+
+function renderManualScanMetrics() {
+    const container = document.getElementById('manualScanMetrics');
+    if (!container) return;
+    const metrics = manualScanLogMetrics();
+    const pct = value => value == null ? 'n/a' : (value * 100).toFixed(1) + '%';
+    const r = value => value == null ? 'n/a' : Number(value).toFixed(2) + 'R';
+    container.innerHTML = `<div class="recent-item"><strong>Manual scan metrics</strong><br>Total ${metrics.total} · Fill ${pct(metrics.fill_rate)} · TP1 ${pct(metrics.post_fill_tp1_rate)} · SL ${pct(metrics.sl_rate)} · Expectancy ${r(metrics.expectancy_r)}<br>Citations verified ${pct(metrics.citations_verified_rate)}</div>`;
 }
 
 function renderManualPendingRecords() {
     const container = document.getElementById('manualPendingList');
     if (!container) return;
-    const pending = readManualScanLog().filter(record => record.outcome === 'PENDING' && String(record.action).includes('LIMIT'));
+    const pending = readManualScanLog().filter(record => ['PENDING', 'FILLED'].includes(record.outcome) && String(record.action).includes('LIMIT'));
     if (!pending.length) { container.textContent = 'No resting manual limits.'; return; }
     const now = Date.now();
+    const escape = value => String(value ?? '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
     container.innerHTML = pending.map(record => {
         const age = Number.isFinite(Date.parse(record.generated_at)) ? Math.max(0, Math.floor((now - Date.parse(record.generated_at)) / 3600000)) : 'UNKNOWN';
         const expiry = Number(record.expiry_hours) || 24;
-        return `<div class="recent-item"><strong>${record.symbol} ${record.action}</strong><br>Entry ${record.entry ?? 'UNKNOWN'} · age ${age}h/${expiry}h · zone ${record.poi_zone_low ?? 'UNKNOWN'}-${record.poi_zone_high ?? 'UNKNOWN'} · DOL ${record.dol_level ?? 'UNKNOWN'}<br><button class="cancel-btn" data-manual-scan-id="${String(record.scan_id).replace(/"/g, '&quot;')}">Cancel</button></div>`;
+        const id = escape(record.scan_id);
+        const resultR = record.result_R == null ? '' : String(record.result_R);
+        const excursion = record.mfe_R == null && record.mae_R == null ? ''
+            : ` · MFE ${record.mfe_R ?? 'UNKNOWN'}R / MAE ${record.mae_R ?? 'UNKNOWN'}R`;
+        return `<div class="recent-item"><strong>${escape(record.symbol)} ${escape(record.action)} · ${escape(record.outcome)}</strong><br>Entry ${record.entry ?? 'UNKNOWN'} · age ${age}h/${expiry}h · zone ${record.poi_zone_low ?? 'UNKNOWN'}-${record.poi_zone_high ?? 'UNKNOWN'} · DOL ${record.dol_level ?? 'UNKNOWN'}${excursion}<br><input inputmode="decimal" class="result-r-input" placeholder="Result R" value="${escape(resultR)}" data-manual-r="${id}"><br><button class="cancel-btn" data-manual-scan-id="${id}" data-manual-outcome="FILLED">Fill</button> <button class="cancel-btn" data-manual-scan-id="${id}" data-manual-outcome="TP1_HIT">TP1</button> <button class="cancel-btn" data-manual-scan-id="${id}" data-manual-outcome="SL_HIT">SL</button> <button class="cancel-btn" data-manual-scan-id="${id}" data-manual-outcome="MANUAL_CLOSE">Close</button> <button class="cancel-btn" data-manual-scan-id="${id}">Cancel</button></div>`;
     }).join('');
 }
 
@@ -21477,6 +21543,7 @@ function cancelManualPendingRecord(scanId) {
             ? { ...record, outcome: 'MANUAL_CLOSE', closed_at: new Date().toISOString() } : record);
         localStorage.setItem(MANUAL_SCAN_LOG_KEY, JSON.stringify(records.slice(-MANUAL_SCAN_LOG_CAP)));
         renderManualPendingRecords();
+        renderManualScanMetrics();
     } catch (error) { console.warn('[MANUAL_SCAN_LOG]', error); }
 }
 
@@ -21544,17 +21611,24 @@ async function logManualAiResult() {
     ['manualAiResultInput', 'manualAiNotes', 'manualAiReason', 'manualAiEntry', 'manualAiStop', 'manualAiTp1', 'manualAiTp2', 'manualAiTp3', 'manualAiRisk', 'manualAiRr', 'manualAiConfidence', 'manualAiZoneLow', 'manualAiZoneHigh', 'manualAiDol', 'manualAiExpiry'].forEach(id => { const element = document.getElementById(id); if (element) element.value = ''; });
 }
 
+function manualScanLogJson(records = readManualScanLog()) {
+    return JSON.stringify(Array.isArray(records) ? records : [], null, 2);
+}
+
+function manualScanLogCsv(records = readManualScanLog()) {
+    const list = Array.isArray(records) ? records : [];
+    const keys = [...new Set(list.flatMap(record => Object.keys(record)))];
+    const quote = value => '"' + String(value ?? '').replace(/"/g, '""') + '"';
+    return [keys.join(','), ...list.map(record => keys.map(key => quote(record[key])).join(','))].join('\r\n');
+}
+
 function exportManualScanLog() {
-    const blob = new Blob([JSON.stringify(readManualScanLog(), null, 2)], { type: 'application/json;charset=utf-8' });
+    const blob = new Blob([manualScanLogJson()], { type: 'application/json;charset=utf-8' });
     const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'manual-scan-log.json'; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
 
 function exportManualScanLogCsv() {
-    const records = readManualScanLog();
-    const keys = [...new Set(records.flatMap(record => Object.keys(record)))];
-    const quote = value => '"' + String(value ?? '').replace(/"/g, '""') + '"';
-    const csv = [keys.join(','), ...records.map(record => keys.map(key => quote(record[key])).join(','))].join('\r\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const blob = new Blob([manualScanLogCsv()], { type: 'text/csv;charset=utf-8' });
     const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'manual-scan-log.csv'; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
 
@@ -21581,9 +21655,28 @@ function manualScanLogMetrics(records = readManualScanLog()) {
 
 // Manual records are monitored only with a supplied closed candle. This pure
 // helper deliberately has no provider, broker, or notification side effect.
+function manualOutcomeExcursions(record = {}, candle = {}, exitPrice = null) {
+    const n = value => value === null || value === undefined || value === '' ? null : Number.isFinite(Number(value)) ? Number(value) : null;
+    const entry = n(record.entry), stop = n(record.stop_loss);
+    const high = n(candle.h ?? candle.high), low = n(candle.l ?? candle.low), close = n(candle.c ?? candle.close);
+    const buy = String(record.action).toUpperCase() === 'BUY_LIMIT';
+    const risk = entry != null && stop != null ? (buy ? entry - stop : stop - entry) : null;
+    if (risk == null || !(risk > 0) || high == null || low == null) return {};
+    const favorable = buy ? high - entry : entry - low;
+    const adverse = buy ? entry - low : high - entry;
+    const priorMfe = Number(record.mfe_R), priorMae = Number(record.mae_R);
+    const excursion = {
+        mfe_R: Number(Math.max(Number.isFinite(priorMfe) ? priorMfe : 0, Math.max(0, favorable) / risk).toFixed(4)),
+        mae_R: Number(Math.max(Number.isFinite(priorMae) ? priorMae : 0, Math.max(0, adverse) / risk).toFixed(4))
+    };
+    const exit = n(exitPrice) ?? close;
+    if (exit != null) excursion.result_R = Number(((buy ? exit - entry : entry - exit) / risk).toFixed(4));
+    return excursion;
+}
+
 function evaluateManualPendingOutcome(record = {}, candle = {}, nowMs = Date.now()) {
     if (!['PENDING', 'FILLED'].includes(record.outcome) || candle?.is_closed === false || candle?.forming === true) return record;
-    const n = value => Number.isFinite(Number(value)) ? Number(value) : null;
+    const n = value => value === null || value === undefined || value === '' ? null : Number.isFinite(Number(value)) ? Number(value) : null;
     const close = n(candle.c ?? candle.close), high = n(candle.h ?? candle.high), low = n(candle.l ?? candle.low);
     const entry = n(record.entry), stop = n(record.stop_loss), tp1 = n(record.tp1), zoneLow = n(record.poi_zone_low), zoneHigh = n(record.poi_zone_high), dol = n(record.dol_level);
     const timestamp = rawTextPacketTimestamp(candle.t ?? candle.time ?? candle.timestamp);
@@ -21591,18 +21684,64 @@ function evaluateManualPendingOutcome(record = {}, candle = {}, nowMs = Date.now
     const buy = String(record.action).toUpperCase() === 'BUY_LIMIT';
     if (record.outcome === 'PENDING') {
         const zoneConsumed = Number.isFinite(zoneLow) && Number.isFinite(zoneHigh) && (buy ? close < zoneLow : close > zoneHigh);
-        if (zoneConsumed) return { ...record, outcome: 'CANCELLED_ZONE_CONSUMED', closed_at: new Date(timestamp).toISOString() };
+        if (zoneConsumed) return { ...record, outcome: 'CANCELLED_ZONE_CONSUMED', closed_at: new Date(timestamp).toISOString(), last_monitored_at: new Date(timestamp).toISOString() };
         const dolTapped = Number.isFinite(dol) && (buy ? high >= dol : low <= dol);
-        if (dolTapped) return { ...record, outcome: 'CANCELLED_DOL_TAPPED', closed_at: new Date(timestamp).toISOString() };
+        if (dolTapped) return { ...record, outcome: 'CANCELLED_DOL_TAPPED', closed_at: new Date(timestamp).toISOString(), last_monitored_at: new Date(timestamp).toISOString() };
         const created = Date.parse(record.generated_at || '');
-        if (Number.isFinite(created) && nowMs - created > Number(record.expiry_hours || 24) * 3600000) return { ...record, outcome: 'UNFILLED_EXPIRED', closed_at: new Date(nowMs).toISOString() };
+        if (Number.isFinite(created) && nowMs - created > Number(record.expiry_hours || 24) * 3600000) return { ...record, outcome: 'UNFILLED_EXPIRED', closed_at: new Date(nowMs).toISOString(), last_monitored_at: new Date(timestamp).toISOString() };
         const filled = buy ? low <= entry : high >= entry;
         if (!filled) return record;
     }
     const stopHit = Number.isFinite(stop) && (buy ? low <= stop : high >= stop);
     const tpHit = Number.isFinite(tp1) && (buy ? high >= tp1 : low <= tp1);
     // Conservative rule: an entry/stop/target conflict in one closed candle is a stop.
-    return { ...record, outcome: stopHit ? 'SL_HIT' : tpHit ? 'TP1_HIT' : 'FILLED', filled_at: record.filled_at || new Date(timestamp).toISOString(), closed_at: stopHit || tpHit ? new Date(timestamp).toISOString() : null };
+    const outcome = stopHit ? 'SL_HIT' : tpHit ? 'TP1_HIT' : 'FILLED';
+    const exitPrice = outcome === 'SL_HIT' ? stop : outcome === 'TP1_HIT' ? tp1 : close;
+    const risk = Number.isFinite(stop) ? (buy ? entry - stop : stop - entry) : null;
+    const computed = outcome === 'FILLED' ? null : risk > 0 ? Number(((buy ? exitPrice - entry : entry - exitPrice) / risk).toFixed(4)) : null;
+    return {
+        ...record,
+        outcome,
+        filled_at: record.filled_at || new Date(timestamp).toISOString(),
+        closed_at: outcome === 'FILLED' ? null : new Date(timestamp).toISOString(),
+        last_monitored_at: new Date(timestamp).toISOString(),
+        result_R: outcome === 'FILLED' ? (record.result_R ?? null) : computed,
+        result_R_source: outcome === 'FILLED' ? (record.result_R_source ?? null) : 'MONITOR',
+        ...manualOutcomeExcursions(record, candle, exitPrice)
+    };
+}
+
+const MANUAL_OUTCOME_EVENTS = Object.freeze(['FILLED', 'TP1_HIT', 'SL_HIT', 'MANUAL_CLOSE', 'UNFILLED_EXPIRED']);
+
+function resolveManualScanOutcome(scanId, outcome, resultR = null) {
+    const event = String(outcome || '').toUpperCase();
+    if (!scanId || !MANUAL_OUTCOME_EVENTS.includes(event)) return false;
+    try {
+        const nowIso = new Date().toISOString();
+        let changed = false;
+        const records = readManualScanLog().map(record => {
+            if (record.scan_id !== scanId) return record;
+            changed = true;
+            const next = { ...record, outcome: event, outcome_source: 'MANUAL', updated_at: nowIso };
+            if (event === 'FILLED') {
+                next.filled_at = next.filled_at || nowIso;
+                next.closed_at = null;
+            } else {
+                next.closed_at = next.closed_at || nowIso;
+            }
+            const computed = Number(resultR);
+            if (Number.isFinite(computed)) {
+                next.result_R = computed;
+                next.result_R_source = 'MANUAL';
+            }
+            return next;
+        });
+        if (!changed) return false;
+        localStorage.setItem(MANUAL_SCAN_LOG_KEY, JSON.stringify(records.slice(-MANUAL_SCAN_LOG_CAP)));
+        renderManualPendingRecords();
+        renderManualScanMetrics();
+        return true;
+    } catch (error) { console.warn('[MANUAL_SCAN_LOG]', error); return false; }
 }
 
 const MANUAL_ALERT_KEYS = 'ict_manual_alert_keys_v1';
@@ -21617,7 +21756,10 @@ async function notifyManualOutcome(record, candle) {
     const initData = String(window.Telegram?.WebApp?.initData || '');
     if (!initData || !getProxyBaseUrl()) return;
     const time = rawTextPacketTimestamp(candle?.t ?? candle?.time ?? candle?.timestamp);
-    const text = `${record.symbol} ${record.action || 'MANUAL'} | ${event}\nEntry: ${record.entry ?? 'UNKNOWN'} | Closed candle: ${Number.isFinite(time) ? new Date(time).toISOString() : 'UNKNOWN'}`;
+    const resultR = record.result_R == null ? 'n/a' : Number(record.result_R).toFixed(2) + 'R';
+    const excursion = record.mfe_R == null && record.mae_R == null ? ''
+        : `\nMFE: ${record.mfe_R ?? 'UNKNOWN'}R | MAE: ${record.mae_R ?? 'UNKNOWN'}R`;
+    const text = `${record.symbol} ${record.action || 'MANUAL'} | ${event}\nEntry: ${record.entry ?? 'UNKNOWN'} | R: ${resultR}${excursion}\nClosed candle: ${Number.isFinite(time) ? new Date(time).toISOString() : 'UNKNOWN'}`;
     try {
         const response = await fetch(`${getProxyBaseUrl()}/api/telegram/notify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ init_data: initData, text }) });
         if (response.ok) persistManualAlertKey(key);
@@ -22242,12 +22384,31 @@ async function buildCurrentAiMarketPack() {
     const generatedAt = new Date().toISOString();
     const safeSymbol = packet.symbol.replace(/[^A-Z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'market';
     const timestamp = generatedAt.replace(/[:.]/g, '-');
+    const fact = name => {
+        const match = new RegExp('^' + name + '=(.*)$', 'm').exec(packet.text);
+        return match ? match[1].trim() : null;
+    };
+    const captionParts = [
+        'Ghost Machine Market Pack',
+        packet.symbol,
+        'manual ChatGPT review',
+        'closed candles only'
+    ];
+    const marketStatus = fact('MARKET_STATUS');
+    if (marketStatus) captionParts.push(marketStatus);
+    if (fact('QUOTE_STALE') === 'YES') captionParts.push('STALE QUOTE');
+    const warnings = fact('DATA_WARNINGS');
+    if (warnings && warnings !== 'NONE') captionParts.push('WARNINGS ' + warnings);
     return {
         markdown: [
             '# Ghost Machine AI Market Pack',
             '',
             `- Symbol: ${packet.symbol}`,
             `- Generated UTC: ${generatedAt}`,
+            `- Schema: ${fact('MARKET_PACK_SCHEMA_VERSION') || 'UNKNOWN'}`,
+            `- Market status: ${marketStatus || 'UNKNOWN'} (${fact('MARKET_STATUS_SOURCE') || 'UNKNOWN'})`,
+            `- Quote stale: ${fact('QUOTE_STALE') || 'UNKNOWN'} · Reference age: ${fact('REFERENCE_AGE_SECONDS') || 'UNKNOWN'}s`,
+            `- Data warnings: ${warnings || 'UNKNOWN'}`,
             '- Candle policy: CLOSED_ONLY',
             '',
             '## Manual ChatGPT Strategy Contract',
@@ -22262,7 +22423,8 @@ async function buildCurrentAiMarketPack() {
             ''
         ].join('\n'),
         filename: `ghost-machine-market-pack-${safeSymbol}-${timestamp}.md`,
-        symbol: packet.symbol
+        symbol: packet.symbol,
+        caption: captionParts.join(' | ').slice(0, 1000)
     };
 }
 
@@ -22312,7 +22474,7 @@ async function sendAiMarketPackToTelegram() {
                 init_data: initData,
                 document_base64: marketPackBase64(new TextEncoder().encode(pack.markdown)),
                 filename: pack.filename,
-                caption: `Ghost Machine Market Pack | ${pack.symbol} | manual ChatGPT review | closed candles only`
+                caption: pack.caption || `Ghost Machine Market Pack | ${pack.symbol} | manual ChatGPT review | closed candles only`
             })
         });
         let result = {};
