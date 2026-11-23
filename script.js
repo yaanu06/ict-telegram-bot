@@ -1078,6 +1078,8 @@ function init() {
     if(el('copyRawMarketBtn')) el('copyRawMarketBtn').addEventListener('click', copyRawMarketAnalysisPacket);
     if(el('downloadRawMarketBtn')) el('downloadRawMarketBtn').addEventListener('click', downloadRawMarketAnalysisPacket);
     if(el('sendAiPackBtn')) el('sendAiPackBtn').addEventListener('click', sendAiMarketPackToTelegram);
+    if(el('logAiResultBtn')) el('logAiResultBtn').addEventListener('click', logManualAiResult);
+    if(el('exportScanLogBtn')) el('exportScanLogBtn').addEventListener('click', exportManualScanLog);
     if(el('updateKeysBtn')) el('updateKeysBtn').addEventListener('click', showSetup);
     if(el('saveSetupBtn')) el('saveSetupBtn').addEventListener('click', saveCurrentSetup);
     if(el('recentList')) el('recentList').addEventListener('click', handleRecentClick);
@@ -21424,6 +21426,65 @@ function buildRawTextMarketAnalysisPacket({ signal = {}, replay = null } = {}) {
         lines.push(...buildRawCandleAiCsvLines(source, timeframe, asOfMs, precision), '');
     }
     return lines.join('\n');
+}
+
+const MANUAL_SCAN_LOG_KEY = 'ict_manual_scan_log_v1';
+const MANUAL_SCAN_LOG_CAP = 500;
+
+function readManualScanLog() {
+    try {
+        const parsed = JSON.parse(localStorage.getItem(MANUAL_SCAN_LOG_KEY) || '[]');
+        return Array.isArray(parsed) ? parsed : [];
+    } catch { return []; }
+}
+
+function appendManualScanLog(record) {
+    try {
+        const records = readManualScanLog();
+        records.push(record);
+        localStorage.setItem(MANUAL_SCAN_LOG_KEY, JSON.stringify(records.slice(-MANUAL_SCAN_LOG_CAP)));
+        return true;
+    } catch (error) { console.warn('[MANUAL_SCAN_LOG]', error); return false; }
+}
+
+async function sha256Text(text) {
+    if (!globalThis.crypto?.subtle || typeof TextEncoder === 'undefined') return 'UNKNOWN';
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(text || '')));
+    return Array.from(new Uint8Array(digest)).map(value => value.toString(16).padStart(2, '0')).join('');
+}
+
+async function logManualAiResult() {
+    const input = document.getElementById('manualAiResultInput');
+    const status = document.getElementById('manualAiLogStatus');
+    let result;
+    try { result = JSON.parse(String(input?.value || '')); } catch { if (status) status.textContent = 'Invalid JSON; nothing was logged.'; return; }
+    const packet = getCurrentRawMarketAnalysisPacket();
+    if (!packet) { if (status) status.textContent = 'Run a completed scan first.'; return; }
+    const replay = packet.replay || {};
+    const facts = buildRawCandleAiFacts(replay, packet.symbol, replay.symbol_metadata || {}, rawTextPacketTimestamp(replay.scan_as_of) || Date.now());
+    const value = key => result?.[key] ?? null;
+    const record = {
+        scan_id: `MANUAL:${currentScanArtifact?.scan_id || replay.snapshot_id || Date.now()}`,
+        generated_at: new Date().toISOString(), symbol: packet.symbol,
+        provider: getMarketDataProvider(), asset_class: getAssetClass(packet.symbol),
+        prompt_contract_version: 'RAW_CANDLE_AI_V4.0', packet_sha256: await sha256Text(packet.text),
+        quote_age_seconds: null, quote_stale: null, session_name: null, news_window: null,
+        atr_1h: null, atr_4h: null, action: String(value('action') || 'UNREVIEWED').toUpperCase(),
+        reason_code: value('reason_code'), entry: value('entry'), stop_loss: value('stop_loss'),
+        tp1: value('tp1'), tp2: value('tp2'), tp3: value('tp3'), risk: value('risk'), rr_tp1: value('rr_tp1'),
+        confidence: value('confidence'), poi_zone_low: value('poi_zone_low'), poi_zone_high: value('poi_zone_high'),
+        dol_level: value('dol_level'), expiry_hours: value('expiry_hours') ?? 24,
+        citations_verified: value('citations_verified') || 'UNSET', notes: value('notes'),
+        raw_ai_response: value('raw_ai_response') || null, outcome: 'PENDING'
+    };
+    if (!appendManualScanLog(record)) { if (status) status.textContent = 'Log storage failed; scan was not changed.'; return; }
+    if (status) status.textContent = `Logged ${record.action}; manual review only.`;
+    if (input) input.value = '';
+}
+
+function exportManualScanLog() {
+    const blob = new Blob([JSON.stringify(readManualScanLog(), null, 2)], { type: 'application/json;charset=utf-8' });
+    const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'manual-scan-log.json'; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
 
 function fallbackCopyPlainText(packetText) {
