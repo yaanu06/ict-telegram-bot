@@ -715,6 +715,12 @@ describe('symbol-aware market-pack defaults', () => {
         expect(ctx.getAssetClass(symbol)).toBe(assetClass);
         expect(ctx.getMarketSettings(symbol)).toEqual(expect.objectContaining({ pipSize: tick, prec: precision }));
         expect(ctx.hasRealVolume(symbol)).toBe(volume);
+        const facts = ctx.buildRawCandleAiFacts({ quote: {}, history: {} }, symbol, {}, Date.parse('2026-01-01T08:00:00Z'), precision, null).join('\n');
+        expect(facts).toContain(`ASSET_CLASS=${assetClass}`);
+        expect(facts).toContain(`VOLUME_RELIABLE=${volume ? 'YES' : 'NO'}`);
+        expect(facts).toContain(assetClass === 'CRYPTO'
+            ? 'GAP_NOTE=CRYPTO trades 24/7; gaps are provider/data gaps unless separately proven.'
+            : 'GAP_NOTE=22:00-23:00 UTC gaps and weekends may be broker rollover or market closure.');
     });
 
     test('does not fabricate tick, precision, spread, or news for unresolved symbols', () => {
