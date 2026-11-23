@@ -693,7 +693,7 @@ describe('manual market-pack prompt lint', () => {
     const strategy = fs.readFileSync(path.join(__dirname, 'ghost-machine-strategy.md'), 'utf8');
     test('has one readable V5 pending-limit contract with correct limit semantics', () => {
         expect((strategy.match(/PROMPT_CONTRACT_VERSION=/g) || [])).toHaveLength(1);
-        expect(strategy).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_PENDING_LIMIT_V5.1');
+        expect(strategy).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_PENDING_LIMIT_V5.2');
         for (const banned of ['V2.7.2', 'DEEPSEEK JSON', 'parser will enforce', 'restored verbatim', 'JSON-only', 'MUST output']) {
             expect(strategy).not.toContain(banned);
         }
@@ -704,6 +704,9 @@ describe('manual market-pack prompt lint', () => {
         expect(strategy).toContain('15M order blocks or fair value gaps are permitted only');
         expect(strategy).toMatch(/15M\s+pattern must never reverse or replace that higher-timeframe thesis/);
         expect(strategy).toContain('15M POI: buffer = max(1.5 * ATR_15M, 2 * SPREAD, 2 * TICK_SIZE).');
+        expect(strategy).toContain('does NOT count as mitigation');
+        expect(strategy).toContain("Audit freshness only from the next closed candle after that confirmation.");
+        expect(strategy).toContain('any later closed candle\'s range overlaps');
         expect(strategy).toContain('"action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE"');
         expect(strategy).toContain('pending limit');
     });
@@ -913,7 +916,7 @@ describe('generated AI Market Pack metadata', () => {
         const pack = await ctx.buildCurrentAiMarketPack();
         expect((pack.markdown.match(/PROMPT_CONTRACT_VERSION=/g) || [])).toHaveLength(1);
         expect(pack.markdown).toContain('## Pending Limit Strategy Contract');
-        expect(pack.markdown).toContain('RAW_CANDLE_PENDING_LIMIT_V5.1');
+        expect(pack.markdown).toContain('RAW_CANDLE_PENDING_LIMIT_V5.2');
         expect(packetText).not.toContain('PROMPT_CONTRACT_VERSION=');
         expect(pack.markdown).toContain('Schema: TEST.1');
         expect(pack.markdown).toContain('Market status: OPEN (CONFIGURED_SESSION)');
