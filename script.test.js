@@ -689,6 +689,19 @@ describe('strategy entry lifecycle', () => {
     });
 });
 
+describe('manual market-pack prompt lint', () => {
+    const strategy = fs.readFileSync(path.join(__dirname, 'ghost-machine-strategy.py'), 'utf8');
+    test('has one readable V4 contract and excludes retired automatic-parser language', () => {
+        expect((strategy.match(/PROMPT_CONTRACT_VERSION=/g) || [])).toHaveLength(1);
+        expect(strategy).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V4.0');
+        for (const banned of ['V2.7.2', 'DEEPSEEK JSON', 'parser will enforce', 'restored verbatim', 'JSON-only', 'MUST output']) {
+            expect(strategy).not.toContain(banned);
+        }
+        expect(strategy).not.toContain('proximal=BOTTOM edge for BUY_LIMIT');
+        expect(strategy).toMatch(/bullish zone below price:\s*proximal=TOP\/HIGH edge/i);
+    });
+});
+
 describe('one-file AI Market Pack', () => {
     test('builds a PDF containing chart imagery, strategy text, and raw timeframe data', () => {
         const ctx = getContext();
