@@ -22378,9 +22378,6 @@ function buildMarketPackChart(replay, symbol, generatedAt) {
 async function buildCurrentAiMarketPack() {
     const packet = getCurrentRawMarketAnalysisPacket();
     if (!packet) return null;
-    const strategyResponse = await fetch(`ghost-machine-strategy.py?v=${encodeURIComponent(APP_BUILD_ID || 'current')}`, { cache: 'no-store' });
-    if (!strategyResponse.ok) throw new Error('The embedded Ghost Machine strategy could not be loaded');
-    const strategyText = await strategyResponse.text();
     const generatedAt = new Date().toISOString();
     const safeSymbol = packet.symbol.replace(/[^A-Z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'market';
     const timestamp = generatedAt.replace(/[:.]/g, '-');
@@ -22410,10 +22407,6 @@ async function buildCurrentAiMarketPack() {
             `- Quote stale: ${fact('QUOTE_STALE') || 'UNKNOWN'} · Reference age: ${fact('REFERENCE_AGE_SECONDS') || 'UNKNOWN'}s`,
             `- Data warnings: ${warnings || 'UNKNOWN'}`,
             '- Candle policy: CLOSED_ONLY',
-            '',
-            '## Manual ChatGPT Strategy Contract',
-            '',
-            strategyText.trim(),
             '',
             '## Raw Closed Timeframe Data',
             '',

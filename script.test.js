@@ -888,18 +888,28 @@ describe('market-pack swing-map regressions', () => {
 });
 
 describe('generated AI Market Pack metadata', () => {
-    test('carries exactly one prompt contract version and factual caption metadata', () => {
+    test('embeds factual metadata and raw candles without the strategy prompt', async () => {
         const ctx = getContext();
-        const strategy = fs.readFileSync(path.join(__dirname, 'ghost-machine-strategy.py'), 'utf8');
-        const asOf = Date.parse('2026-01-07T12:00:00Z');
-        const replay = packReplay({ pair: 'BTC/USD', metadata: { asset_class: 'CRYPTO', tick_size: 0.01, price_precision: 2 }, asOf, quoteTime: new Date(asOf - 300000).toISOString() });
-        const packet = ctx.buildRawTextMarketAnalysisPacket({ replay });
-        const markdown = ['# Ghost Machine AI Market Pack', strategy.trim(), '## Raw Closed Timeframe Data', packet.trim()].join('\n');
-        expect((markdown.match(/PROMPT_CONTRACT_VERSION=/g) || [])).toHaveLength(1);
-        expect(packet).not.toContain('PROMPT_CONTRACT_VERSION=');
-        expect(packet).toContain('MARKET_STATUS=');
-        expect(packet).toContain('DATA_WARNINGS=');
-        expect(packet).toContain('QUOTE_STALE');
+        const packetText = [
+            'MARKET_PACK_SCHEMA_VERSION=TEST.1',
+            'MARKET_STATUS=OPEN',
+            'MARKET_STATUS_SOURCE=CONFIGURED_SESSION',
+            'QUOTE_STALE=NO',
+            'REFERENCE_AGE_SECONDS=12',
+            'DATA_WARNINGS=NONE',
+            'SYMBOL=BTC/USD',
+            'CANDLE_5M=2026-01-07T11:55:00Z,100,101,99,100'
+        ].join('\n');
+        ctx.getCurrentRawMarketAnalysisPacket = () => ({ symbol: 'BTC/USD', text: packetText });
+        const pack = await ctx.buildCurrentAiMarketPack();
+        expect(pack.markdown).not.toContain('Manual ChatGPT Strategy Contract');
+        expect(pack.markdown).not.toContain('PROMPT_CONTRACT_VERSION=');
+        expect(pack.markdown).toContain('Schema: TEST.1');
+        expect(pack.markdown).toContain('Market status: OPEN (CONFIGURED_SESSION)');
+        expect(pack.markdown).toContain('~~~text');
+        expect(pack.markdown).toContain('SYMBOL=BTC/USD');
+        expect(pack.caption).toContain('BTC/USD');
+        expect(pack.filename).toMatch(/^ghost-machine-market-pack-BTC_USD-/);
     });
 });
 
