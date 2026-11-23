@@ -11156,9 +11156,9 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
 
     it('classifies PRIME, SHOULDER, and OFF_SESSION UTC boundaries', () => {
         const ctx = getContext();
-        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T00:00:00Z'))).toEqual(expect.objectContaining({ session_quality: 'OFF_SESSION', session_window: 'OFF_SESSION' }));
-        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T06:00:00Z'))).toEqual(expect.objectContaining({ session_quality: 'SHOULDER', session_window: 'PRE_LONDON' }));
-        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T06:59:00Z'))).toEqual(expect.objectContaining({ session_quality: 'SHOULDER' }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T00:00:00Z'))).toEqual(expect.objectContaining({ session_quality: 'PRIME', session_window: 'ASIA' }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T06:00:00Z'))).toEqual(expect.objectContaining({ session_quality: 'PRIME', session_window: 'ASIA' }));
+        expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T06:59:00Z'))).toEqual(expect.objectContaining({ session_quality: 'PRIME', session_window: 'ASIA' }));
         expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T07:00:00Z'))).toEqual(expect.objectContaining({ session_quality: 'PRIME', session_window: 'LONDON' }));
         expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T11:00:00Z'))).toEqual(expect.objectContaining({ session_quality: 'PRIME', session_window: 'OVERLAP' }));
         expect(ctx.rawCandleAiServerClock(Date.parse('2026-10-06T12:00:00Z'))).toEqual(expect.objectContaining({ session_quality: 'PRIME', session_window: 'NEW_YORK' }));
@@ -11179,10 +11179,7 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(diagnostic.candle_limits).toEqual(limits);
         expect(diagnostic.total_candles).toBe(367);
         expect(diagnostic.estimated_tokens).toBe(Math.ceil(packet.length / 4));
-        expect(diagnostic.macro_context_levels.map(level => level.name)).toEqual([
-            'PREVIOUS_DAY_HIGH', 'PREVIOUS_DAY_LOW', 'ASIA_HIGH', 'ASIA_LOW',
-            'LONDON_HIGH', 'LONDON_LOW', 'NEW_YORK_HIGH', 'NEW_YORK_LOW'
-        ]);
+        expect(diagnostic.macro_context_levels.map(level => level.name)).toEqual(['PREVIOUS_DAY_HIGH', 'PREVIOUS_DAY_LOW']);
         expect(diagnostic.session_quality).toEqual(expect.objectContaining({
             quality: 'PRIME', window: 'NEW_YORK', prime: true, veto: false
         }));

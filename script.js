@@ -777,11 +777,11 @@ function getMarketSettings(p, metadata = {}) {
         targetRR: Number.isFinite(Number(metadata.minimum_rr)) && Number(metadata.minimum_rr) > 0 ? Number(metadata.minimum_rr) : settings.targetRR,
         minSLMultiplier: Number.isFinite(Number(metadata.min_sl_atr_multiplier)) && Number(metadata.min_sl_atr_multiplier) > 0 ? Number(metadata.min_sl_atr_multiplier) : settings.minSLMultiplier
     });
-    if (assetClass === 'METAL') return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.015, targetRR: 2.0, prec: symbol.includes('XAG') ? 3 : 2, pipSize: symbol.includes('XAG') ? 0.001 : 0.1, minSLMultiplier: 0.25 });
+    if (assetClass === 'METAL') return withMetadata({ slBuffer: 3, minSL: 3, maxSLPct: 0.015, targetRR: 2.0, prec: symbol.includes('XAG') ? 3 : 2, pipSize: symbol.includes('XAG') ? 0.001 : 0.1, minSLMultiplier: 2.0 });
     if (assetClass === 'FOREX' && quoteCurrency === 'JPY') return withMetadata({ slBuffer: 0.15, minSL: 0.10, maxSLPct: 0.01, targetRR: 2.5, prec: 3, pipSize: 0.01 });
     if (assetClass === 'CRYPTO') {
         const btcUsd = /BTC\/?(?:USD|USDT)$/.test(symbol);
-        return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.25, targetRR: 2.0, prec: btcUsd ? 2 : 8, pipSize: btcUsd ? 0.01 : 0.00000001, minSLMultiplier: 0.25 });
+        return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.25, targetRR: 2.0, prec: btcUsd ? 2 : 8, pipSize: btcUsd ? 0.01 : 0.00000001, minSLMultiplier: 2.0 });
     }
     if (assetClass === 'EQUITY' || assetClass === 'INDEX') return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.10, targetRR: 2.5, prec: 4, pipSize: 0.01, minSLMultiplier: 1.5 });
     if (assetClass === 'UNKNOWN') return withMetadata({ slBuffer: 0, minSL: 0, maxSLPct: 0.10, targetRR: 2.5, prec: 6, pipSize: 0.000001, minSLMultiplier: 1.5 });
