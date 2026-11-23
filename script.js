@@ -21582,25 +21582,27 @@ function manualScanLogMetrics(records = readManualScanLog()) {
 // Manual records are monitored only with a supplied closed candle. This pure
 // helper deliberately has no provider, broker, or notification side effect.
 function evaluateManualPendingOutcome(record = {}, candle = {}, nowMs = Date.now()) {
-    if (record.outcome !== 'PENDING' || candle?.is_closed === false || candle?.forming === true) return record;
+    if (!['PENDING', 'FILLED'].includes(record.outcome) || candle?.is_closed === false || candle?.forming === true) return record;
     const n = value => Number.isFinite(Number(value)) ? Number(value) : null;
     const close = n(candle.c ?? candle.close), high = n(candle.h ?? candle.high), low = n(candle.l ?? candle.low);
     const entry = n(record.entry), stop = n(record.stop_loss), tp1 = n(record.tp1), zoneLow = n(record.poi_zone_low), zoneHigh = n(record.poi_zone_high), dol = n(record.dol_level);
     const timestamp = rawTextPacketTimestamp(candle.t ?? candle.time ?? candle.timestamp);
     if (![close, high, low, entry].every(Number.isFinite) || !Number.isFinite(timestamp)) return record;
     const buy = String(record.action).toUpperCase() === 'BUY_LIMIT';
-    const zoneConsumed = Number.isFinite(zoneLow) && Number.isFinite(zoneHigh) && (buy ? close < zoneLow : close > zoneHigh);
-    if (zoneConsumed) return { ...record, outcome: 'CANCELLED_ZONE_CONSUMED', closed_at: new Date(timestamp).toISOString() };
-    const dolTapped = Number.isFinite(dol) && (buy ? high >= dol : low <= dol);
-    if (dolTapped) return { ...record, outcome: 'CANCELLED_DOL_TAPPED', closed_at: new Date(timestamp).toISOString() };
-    const created = Date.parse(record.generated_at || '');
-    if (Number.isFinite(created) && nowMs - created > Number(record.expiry_hours || 24) * 3600000) return { ...record, outcome: 'UNFILLED_EXPIRED', closed_at: new Date(nowMs).toISOString() };
-    const filled = buy ? low <= entry : high >= entry;
-    if (!filled) return record;
+    if (record.outcome === 'PENDING') {
+        const zoneConsumed = Number.isFinite(zoneLow) && Number.isFinite(zoneHigh) && (buy ? close < zoneLow : close > zoneHigh);
+        if (zoneConsumed) return { ...record, outcome: 'CANCELLED_ZONE_CONSUMED', closed_at: new Date(timestamp).toISOString() };
+        const dolTapped = Number.isFinite(dol) && (buy ? high >= dol : low <= dol);
+        if (dolTapped) return { ...record, outcome: 'CANCELLED_DOL_TAPPED', closed_at: new Date(timestamp).toISOString() };
+        const created = Date.parse(record.generated_at || '');
+        if (Number.isFinite(created) && nowMs - created > Number(record.expiry_hours || 24) * 3600000) return { ...record, outcome: 'UNFILLED_EXPIRED', closed_at: new Date(nowMs).toISOString() };
+        const filled = buy ? low <= entry : high >= entry;
+        if (!filled) return record;
+    }
     const stopHit = Number.isFinite(stop) && (buy ? low <= stop : high >= stop);
     const tpHit = Number.isFinite(tp1) && (buy ? high >= tp1 : low <= tp1);
     // Conservative rule: an entry/stop/target conflict in one closed candle is a stop.
-    return { ...record, outcome: stopHit ? 'SL_HIT' : tpHit ? 'TP1_HIT' : 'FILLED', filled_at: new Date(timestamp).toISOString(), closed_at: stopHit || tpHit ? new Date(timestamp).toISOString() : null };
+    return { ...record, outcome: stopHit ? 'SL_HIT' : tpHit ? 'TP1_HIT' : 'FILLED', filled_at: record.filled_at || new Date(timestamp).toISOString(), closed_at: stopHit || tpHit ? new Date(timestamp).toISOString() : null };
 }
 
 const MANUAL_ALERT_KEYS = 'ict_manual_alert_keys_v1';
@@ -21625,7 +21627,7 @@ async function notifyManualOutcome(record, candle) {
 function monitorManualPendingRecords(symbol, candle, nowMs = Date.now()) {
     const records = readManualScanLog(); let changed = false;
     const updated = records.map(record => {
-        if (record.symbol !== symbol || record.outcome !== 'PENDING') return record;
+        if (record.symbol !== symbol || !['PENDING', 'FILLED'].includes(record.outcome)) return record;
         const next = evaluateManualPendingOutcome(record, candle, nowMs);
         if (next.outcome !== record.outcome) { changed = true; void notifyManualOutcome(next, candle); }
         return next;

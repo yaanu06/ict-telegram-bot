@@ -748,6 +748,7 @@ describe('manual scan measurement', () => {
         const consumed = { ...record, poi_zone_low: 101, poi_zone_high: 102 };
         expect(ctx.evaluateManualPendingOutcome(consumed, candle, Date.parse('2026-01-01T01:00:00Z')).outcome).toBe('CANCELLED_ZONE_CONSUMED');
         expect(ctx.evaluateManualPendingOutcome(record, { ...candle, is_closed: false }).outcome).toBe('PENDING');
+        expect(ctx.evaluateManualPendingOutcome({ ...record, outcome: 'FILLED', filled_at: '2026-01-01T00:30:00Z' }, { t: '2026-01-01T02:00:00Z', h: 104.5, l: 100, c: 104, is_closed: true }).outcome).toBe('TP1_HIT');
     });
 });
 
