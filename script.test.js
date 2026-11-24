@@ -691,6 +691,7 @@ describe('strategy entry lifecycle', () => {
 
 describe('manual market-pack prompt lint', () => {
     const strategy = fs.readFileSync(path.join(__dirname, 'ghost-machine-strategy.md'), 'utf8');
+    const outputContract = fs.readFileSync(path.join(__dirname, 'ghost-machine-output-contract.md'), 'utf8');
     test('has one readable V5 pending-limit contract with correct limit semantics', () => {
         expect((strategy.match(/PROMPT_CONTRACT_VERSION=/g) || [])).toHaveLength(1);
         expect(strategy).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_PENDING_LIMIT_V5.4');
@@ -709,13 +710,14 @@ describe('manual market-pack prompt lint', () => {
         expect(strategy).toContain('any later closed candle\'s range overlaps');
         expect(strategy).toContain('CRT and TBS may strengthen confidence or help identify the same POI');
         expect(strategy).toContain('Best rr_tp1 < 1.70: still return the best POI as a BUY_LIMIT/SELL_LIMIT.');
-        expect(strategy).toContain('"action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE"');
+        expect(outputContract).toContain('"action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE"');
         expect(strategy).toContain('pending limit');
     });
 });
 
 describe('pending-limit eligibility contract', () => {
     const strategy = fs.readFileSync(path.join(__dirname, 'ghost-machine-strategy.md'), 'utf8');
+    const outputContract = fs.readFileSync(path.join(__dirname, 'ghost-machine-output-contract.md'), 'utf8');
     const flat = strategy.replace(/\s+/g, ' ');
     const contractText = text => {
         const normalized = String(text).replace(/\r\n/g, '\n');
@@ -786,7 +788,7 @@ JSON RULES
 8. If any check fails and cannot be fixed, return NO_TRADE with a valid code.`;
 
     test('JSON output contract is byte-identical to 7cceb38', () => {
-        expect(contractText(strategy)).toBe(FROZEN_7CCEB38_CONTRACT);
+        expect(contractText(outputContract)).toBe(FROZEN_7CCEB38_CONTRACT);
     });
 
     test('documents the explicit eligibility order, future retracement, and RR_TOO_LOW scope', () => {
@@ -974,7 +976,7 @@ JSON RULES
                 'SYMBOL=XAU/USD'
             ].join('\n')
         });
-        ctx.fetch = jest.fn(async () => ({ ok: true, text: async () => strategy }));
+        ctx.fetch = jest.fn(async url => ({ ok: true, text: async () => url === 'ghost-machine-output-contract.md' ? outputContract : strategy }));
         const pack = await ctx.buildCurrentAiMarketPack();
         expect(contractText(pack.markdown)).toBe(FROZEN_7CCEB38_CONTRACT);
     });
@@ -1185,6 +1187,7 @@ describe('generated AI Market Pack metadata', () => {
     test('embeds the pending-limit strategy once plus factual metadata and raw candles', async () => {
         const ctx = getContext();
         const strategy = fs.readFileSync(path.join(__dirname, 'ghost-machine-strategy.md'), 'utf8');
+        const outputContract = fs.readFileSync(path.join(__dirname, 'ghost-machine-output-contract.md'), 'utf8');
         const packetText = [
             'MARKET_PACK_SCHEMA_VERSION=TEST.1',
             'MARKET_STATUS=OPEN',
@@ -1196,10 +1199,12 @@ describe('generated AI Market Pack metadata', () => {
             'CANDLE_5M=2026-01-07T11:55:00Z,100,101,99,100'
         ].join('\n');
         ctx.getCurrentRawMarketAnalysisPacket = () => ({ symbol: 'BTC/USD', text: packetText });
-        ctx.fetch = jest.fn(async () => ({ ok: true, text: async () => strategy }));
+        ctx.fetch = jest.fn(async url => ({ ok: true, text: async () => url === 'ghost-machine-output-contract.md' ? outputContract : strategy }));
         const pack = await ctx.buildCurrentAiMarketPack();
         expect(pack.markdown).toContain(strategy.trim());
+        expect(pack.markdown).toContain(outputContract.trim());
         expect(pack.markdown).toContain('## Pending Limit Strategy Contract');
+        expect(pack.markdown).toContain('## Strict JSON Output Contract');
         expect(pack.markdown).toContain('No tables or prose outside the block.');
         expect(packetText).not.toContain('PROMPT_CONTRACT_VERSION=');
         expect(pack.markdown).toContain('Schema: TEST.1');
@@ -1213,12 +1218,13 @@ describe('generated AI Market Pack metadata', () => {
 
 describe('pending-limit JSON output contract', () => {
     const strategy = fs.readFileSync(path.join(__dirname, 'ghost-machine-strategy.md'), 'utf8');
+    const outputContract = fs.readFileSync(path.join(__dirname, 'ghost-machine-output-contract.md'), 'utf8');
     const flat = strategy.replace(/\s+/g, ' ');
     const contractKeyOrder = (() => {
         const marker = '=== OUTPUT CONTRACT (STRICT) ===';
-        const start = strategy.indexOf('{', strategy.indexOf(marker));
-        const end = strategy.indexOf('}', start);
-        return [...strategy.slice(start, end).matchAll(/^[ \t]*"([a-z0-9_]+)":/gm)].map(match => match[1]);
+        const start = outputContract.indexOf('{', outputContract.indexOf(marker));
+        const end = outputContract.indexOf('}', start);
+        return [...outputContract.slice(start, end).matchAll(/^[ \t]*"([a-z0-9_]+)":/gm)].map(match => match[1]);
     })();
     const sideRuleHolds = ({ action, entry, reference }) => {
         if (action === 'BUY_LIMIT') return entry < reference;
@@ -1229,15 +1235,15 @@ describe('pending-limit JSON output contract', () => {
     test('the pack requires exactly one fenced json block with no surrounding prose', async () => {
         const ctx = getContext();
         ctx.getCurrentRawMarketAnalysisPacket = () => ({ symbol: 'XAU/USD', text: 'SYMBOL=XAU/USD\nMARKET_STATUS=OPEN' });
-        ctx.fetch = jest.fn(async () => ({ ok: true, text: async () => strategy }));
+        ctx.fetch = jest.fn(async url => ({ ok: true, text: async () => url === 'ghost-machine-output-contract.md' ? outputContract : strategy }));
         const pack = await ctx.buildCurrentAiMarketPack();
         expect(pack.markdown).toContain('IMPORTANT OUTPUT REQUIREMENT');
         expect(pack.markdown).toContain('Return exactly ONE markdown code fence labelled json');
         expect(pack.markdown).toContain('no prose, tables, headings, or explanation before or after it');
         expect(pack.markdown).toContain('MUST include a real numeric entry price');
         expect(pack.markdown).toContain('No tables or prose outside the block.');
-        expect(strategy).toContain('Start the final reply with the literal');
-        expect(strategy).toContain('Do not wrap the JSON in prose.');
+        expect(outputContract).toContain('Start the final reply with the literal');
+        expect(outputContract).toContain('Do not wrap the JSON in prose.');
     });
 
     test('preserves the exact approved schema keys and order', () => {
@@ -1247,8 +1253,8 @@ describe('pending-limit JSON output contract', () => {
             'expiry_hours', 'htf_context', 'ltf_confirmation', 'citations', 'citations_verified',
             'fail_reasons', 'reason', 'notes', 'watch_next'
         ]);
-        expect(strategy).toContain('"entry": number,');
-        expect(strategy).toContain('"citations_verified": true | false,');
+        expect(outputContract).toContain('"entry": number,');
+        expect(outputContract).toContain('"citations_verified": true | false,');
     });
 
     test('a valid future limit keeps a real entry and is not rejected for distance', () => {

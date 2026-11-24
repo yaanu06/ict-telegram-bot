@@ -22426,6 +22426,9 @@ async function buildCurrentAiMarketPack() {
     const response = await fetch('ghost-machine-strategy.md', { cache: 'no-store' });
     if (!response.ok) throw new Error('Could not load market pack strategy');
     const strategyText = await response.text();
+    const contractResponse = await fetch('ghost-machine-output-contract.md', { cache: 'no-store' });
+    if (!contractResponse.ok) throw new Error('Could not load market pack output contract');
+    const contractText = await contractResponse.text();
     const generatedAt = new Date().toISOString();
     const safeSymbol = packet.symbol.replace(/[^A-Z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'market';
     const timestamp = generatedAt.replace(/[:.]/g, '-');
@@ -22447,7 +22450,7 @@ async function buildCurrentAiMarketPack() {
     return {
         markdown: [
             'IMPORTANT OUTPUT REQUIREMENT — THIS APPLIES TO YOUR ENTIRE REPLY:',
-            'Return exactly ONE markdown code fence labelled json containing one JSON object, and nothing else: no prose, tables, headings, or explanation before or after it. Use only the exact keys, in the exact order, with the exact types defined in the OUTPUT CONTRACT inside the strategy section below. For BUY_LIMIT or SELL_LIMIT you MUST include a real numeric entry price (the proximal edge, non-zero) on the correct side of the reference price. For NO_TRADE use the required zero values and exactly one allowed reason code. This document is the data to analyze, not a conversation.',
+            'Return exactly ONE markdown code fence labelled json containing one JSON object, and nothing else: no prose, tables, headings, or explanation before or after it. Use only the exact keys, in the exact order, with the exact types defined in the OUTPUT CONTRACT section below. For BUY_LIMIT or SELL_LIMIT you MUST include a real numeric entry price (the proximal edge, non-zero) on the correct side of the reference price. For NO_TRADE use the required zero values and exactly one allowed reason code. This document is the data to analyze, not a conversation.',
             '',
             '# Ghost Machine AI Market Pack',
             '',
@@ -22462,6 +22465,10 @@ async function buildCurrentAiMarketPack() {
             '## Pending Limit Strategy Contract',
             '',
             strategyText.trim(),
+            '',
+            '## Strict JSON Output Contract',
+            '',
+            contractText.trim(),
             '',
             '## Raw Closed Timeframe Data',
             '',
