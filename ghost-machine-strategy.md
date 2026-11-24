@@ -70,6 +70,11 @@ Soft warnings never block. State them in notes and lower confidence:
    RR to the nearest unused opposing pool, (c) freshness/unmitigated state,
    and (d) closest valid retracement without being already inside the zone.
    You must return the best candidate. Do not stop at the first zone found.
+   Evaluate trend-aligned retests without waiting for a live trigger. For a
+   range-edge reversal require a sweep and closed structural shift. If one
+   zone fails, continue through all eligible zones. Session travel distance
+   alone cannot reject a future limit. Reject a plan if TP1 was reached after
+   formation before fill, even if price subsequently moved back.
    CRT and TBS may strengthen confidence or help identify the same POI, but
    they are never mandatory confirmations for a resting limit. CRT requires a
    closed reference range, a one-side raid, and a close back inside; TBS

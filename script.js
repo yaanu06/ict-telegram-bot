@@ -22423,11 +22423,9 @@ function buildMarketPackChart(replay, symbol, generatedAt) {
 async function buildCurrentAiMarketPack() {
     const packet = getCurrentRawMarketAnalysisPacket();
     if (!packet) return null;
-    // The downloadable/manual pack must use the same detailed raw-candle
-    // contract that the in-app parser validates. Loading the separate V5
-    // markdown file here created a second, incompatible AI protocol and hid
-    // the candidate cascade/lifecycle audit from external DeepSeek reviews.
-    const strategyText = (await buildRawCandleAiGhostRules()).join('\n');
+    const response = await fetch('ghost-machine-strategy.md', { cache: 'no-store' });
+    if (!response.ok) throw new Error('Could not load market pack strategy');
+    const strategyText = await response.text();
     const generatedAt = new Date().toISOString();
     const safeSymbol = packet.symbol.replace(/[^A-Z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'market';
     const timestamp = generatedAt.replace(/[:.]/g, '-');
@@ -22467,6 +22465,7 @@ async function buildCurrentAiMarketPack() {
             '~~~text',
             packet.text.trim(),
             '~~~',
+            'Return your final decision inside one fenced json block using the exact keys above, including for NO_TRADE. Put candidate review in reason and watch_next. No tables or prose outside the block.',
             ''
         ].join('\n'),
         filename: `ghost-machine-market-pack-${safeSymbol}-${timestamp}.md`,
