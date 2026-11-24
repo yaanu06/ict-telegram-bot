@@ -714,6 +714,267 @@ describe('manual market-pack prompt lint', () => {
     });
 });
 
+describe('pending-limit eligibility contract', () => {
+    const strategy = fs.readFileSync(path.join(__dirname, 'ghost-machine-strategy.md'), 'utf8');
+    const flat = strategy.replace(/\s+/g, ' ');
+    const contractText = text => {
+        const marker = '=== OUTPUT CONTRACT (STRICT) ===';
+        const index = text.indexOf(marker);
+        if (index === -1) return '';
+        const tail = text.slice(index);
+        const cutoff = tail.indexOf('\n## Raw Closed Timeframe Data');
+        return (cutoff === -1 ? tail : tail.slice(0, cutoff)).trimEnd();
+    };
+
+    // Frozen verbatim from commit 6e95fb1da372d7134631283d498f67567a38aee.
+    // This block must never drift: same keys, order, types, zero values.
+    const FROZEN_6E95FB1_CONTRACT = `=== OUTPUT CONTRACT (STRICT) ===
+Reply with ONE markdown code block containing a single JSON object and nothing
+else. No prose before or after. Use these exact keys and no others. Numbers are
+plain numbers rounded to 2 decimals.
+
+{
+  "action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",
+  "reason_code": "NONE" | "<one allowed code>",
+  "grade": "A" | "B" | "NONE",
+  "entry": number,
+  "stop_loss": number,
+  "tp1": number,
+  "tp2": number,
+  "tp3": number,
+  "risk": number,
+  "rr_tp1": number,
+  "confidence": integer 0-100,
+  "poi_zone_low": number,
+  "poi_zone_high": number,
+  "dol_level": number,
+  "expiry_hours": 24 | 48,
+  "htf_context": "1-2 sentences: 1D structure, bias, and the DOL with level and timestamp",
+  "ltf_confirmation": "1 sentence on any 15M/5M sweep or rejection, or NONE if the POI stands alone",
+  "citations": ["each cited price/level with its candle timestamp or named level"],
+  "citations_verified": true,
+  "fail_reasons": ["NONE, or the failed checks"],
+  "reason": "evidence chain: DOL -> POI body range and source candle -> entry edge -> stop anchor and buffer -> TP1 pool and why it is unused",
+  "notes": "warnings (stale quote, gap, rr_below_preferred, unknown spread/tick, session NONE) or NONE",
+  "watch_next": "for NO_TRADE: the nearest zone/level to monitor for a future setup"
+}
+
+JSON RULES
+- On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0;
+  confidence = 0; grade = "NONE"; reason_code = the allowed code; fail_reasons
+  must contain that code.
+- poi_zone_low < poi_zone_high always. dol_level is a single number (use the
+  midpoint of a cluster).
+- risk and rr_tp1 must equal the arithmetic from your own numbers. Recompute
+  before replying; if they do not match, fix them.
+- Do not add, remove, or rename keys. Do not wrap the JSON in prose.
+
+=== SELF-CHECK BEFORE OUTPUT ===
+1. Direction came from 1D, confirmed by 4H; any conflict is noted.
+2. DOL exists, is unmitigated, and matches the trade direction.
+3. POI is unmitigated, cited to a candle timestamp, and its proximal edge is on
+   the correct side of price.
+4. Stop is beyond invalidation plus the symbol-aware buffer, never in the wick.
+5. TP1 is the nearest unused, not body-broken pool; TP ordering is correct.
+6. RR arithmetic appears twice and matches risk/rr_tp1.
+7. Every cited price has a timestamp or named level.
+8. If any check fails and cannot be fixed, return NO_TRADE with a valid code.`;
+
+    test('JSON output contract is byte-identical to 6e95fb1', () => {
+        expect(contractText(strategy)).toBe(FROZEN_6E95FB1_CONTRACT);
+    });
+
+    test('documents the explicit eligibility order, future retracement, and RR_TOO_LOW scope', () => {
+        expect(strategy).toContain('=== PENDING-LIMIT ELIGIBILITY ORDER (DO THIS EXPLICITLY, IN ORDER) ===');
+        expect(flat).toContain('confirmation time = the timestamp of the first directional displacement candle');
+        expect(flat).toContain('formation candle is EXCLUDED from the post-formation touch check');
+        expect(flat).toContain('already body-consumed before confirmation is NOT eligible');
+        expect(flat).toContain('TP1 delivery before any entry touch: retire THIS specific setup');
+        expect(flat).toContain('revive it by selecting a farther target');
+        expect(flat).toContain('finer (e.g. 5M) data cannot establish which happened first');
+        expect(flat).toContain("Treat the order as a future retracement");
+        expect(flat).toContain("a retracement that stays within the current session's realized range");
+        expect(flat).toContain('RR_TOO_LOW is valid ONLY when the verified entry, the structural stop, and the nearest ELIGIBLE UNUSED TP1 actually calculate below 1.70');
+        expect(flat).toContain('A single rejected zone never ends the review');
+    });
+
+    // Reference implementation of the documented eligibility order, used only
+    // to replay fixtures. It is not part of the exported pack.
+    const sells = direction => direction === 'SELL';
+    const selectNearestEligibleTp1 = ({ direction, entry, pools, candles, confirmIndex }) => {
+        const sell = sells(direction);
+        const evidence = candles.slice(0, confirmIndex + 1);
+        const unused = pools.filter(pool => !evidence.some(c => (sell ? c.c < pool : c.c > pool)));
+        const candidates = unused.filter(pool => (sell ? pool < entry : pool > entry));
+        if (!candidates.length) return null;
+        return sell ? Math.max(...candidates) : Math.min(...candidates);
+    };
+    const replayPendingLimit = ({ direction, entry, stop, tp1, candles, confirmIndex }) => {
+        const sell = sells(direction);
+        for (const c of candles.slice(confirmIndex + 1)) {
+            const entryTouched = sell ? c.h >= entry : c.l <= entry;
+            const invalidated = sell ? c.c > stop : c.c < stop;
+            const tpHit = sell ? c.l <= tp1 : c.h >= tp1;
+            if (entryTouched && tpHit) return { status: 'SAME_CANDLE_UNCERTAIN', at: c.t };
+            if (tpHit) return { status: 'RETIRED_TP1_BEFORE_FILL', at: c.t };
+            if (invalidated) return { status: 'RETIRED_INVALIDATED', at: c.t };
+            if (entryTouched) return { status: 'FILLED', at: c.t };
+        }
+        return { status: 'SURVIVES', at: null };
+    };
+    const rrOf = ({ entry, stop, tp1 }) => Math.round((Math.abs(tp1 - entry) / Math.abs(entry - stop)) * 100) / 100;
+    const gradeRr = rr => rr < 1.70 ? 'RR_TOO_LOW' : rr < 2.00 ? 'ELIGIBLE_B' : 'ELIGIBLE_A';
+    const bar = (t, o, h, l, c) => ({ t, o, h, l, c });
+
+    test('an untouched distant limit survives without live confirmation (both directions)', () => {
+        const sellCandles = [
+            bar('2026-11-24T07:00:00Z', 101.0, 101.2, 100.8, 101.0),
+            bar('2026-11-24T07:15:00Z', 101.0, 101.1, 100.9, 101.0),
+            bar('2026-11-24T07:30:00Z', 100.0, 100.6, 99.8, 100.2),
+            bar('2026-11-24T07:45:00Z', 99.0, 99.5, 97.0, 98.0),
+            bar('2026-11-24T08:00:00Z', 98.0, 98.4, 96.5, 97.0)
+        ];
+        expect(replayPendingLimit({ direction: 'SELL', entry: 100.5, stop: 102, tp1: 94, candles: sellCandles, confirmIndex: 2 }).status)
+            .toBe('SURVIVES');
+
+        const buyCandles = [
+            bar('2026-11-24T07:00:00Z', 100.0, 100.4, 99.8, 100.0),
+            bar('2026-11-24T07:15:00Z', 100.0, 100.2, 99.9, 100.0),
+            bar('2026-11-24T07:30:00Z', 100.4, 101.2, 100.3, 101.0),
+            bar('2026-11-24T07:45:00Z', 101.0, 102.0, 101.0, 101.5),
+            bar('2026-11-24T08:00:00Z', 101.5, 103.0, 101.2, 102.5)
+        ];
+        expect(replayPendingLimit({ direction: 'BUY', entry: 100.5, stop: 98, tp1: 106, candles: buyCandles, confirmIndex: 2 }).status)
+            .toBe('SURVIVES');
+    });
+
+    test('TP1 reached before fill stays terminal after price returns (both directions)', () => {
+        const sellCandles = [
+            bar('2026-11-24T07:00:00Z', 101.0, 101.2, 100.8, 101.0),
+            bar('2026-11-24T07:15:00Z', 101.0, 101.1, 100.9, 101.0),
+            bar('2026-11-24T07:30:00Z', 100.0, 100.6, 99.8, 100.2),
+            bar('2026-11-24T07:45:00Z', 99.0, 99.5, 93.5, 94.0),
+            bar('2026-11-24T08:00:00Z', 99.0, 100.6, 99.0, 100.2)
+        ];
+        const sellResult = replayPendingLimit({ direction: 'SELL', entry: 100.5, stop: 102, tp1: 94, candles: sellCandles, confirmIndex: 2 });
+        expect(sellResult.status).toBe('RETIRED_TP1_BEFORE_FILL');
+        expect(sellResult.at).toBe('2026-11-24T07:45:00Z');
+
+        const buyCandles = [
+            bar('2026-11-24T07:00:00Z', 100.0, 100.4, 99.8, 100.0),
+            bar('2026-11-24T07:15:00Z', 100.0, 100.2, 99.9, 100.0),
+            bar('2026-11-24T07:30:00Z', 100.4, 101.2, 100.3, 101.0),
+            bar('2026-11-24T07:45:00Z', 101.0, 106.5, 101.0, 106.0),
+            bar('2026-11-24T08:00:00Z', 101.0, 101.2, 100.2, 100.4)
+        ];
+        const buyResult = replayPendingLimit({ direction: 'BUY', entry: 100.5, stop: 98, tp1: 106, candles: buyCandles, confirmIndex: 2 });
+        expect(buyResult.status).toBe('RETIRED_TP1_BEFORE_FILL');
+        expect(buyResult.at).toBe('2026-11-24T07:45:00Z');
+    });
+
+    test('a pool consumed before formation is excluded from TP1 selection (both directions)', () => {
+        const sellCandles = [
+            bar('2026-11-24T07:00:00Z', 101.0, 101.2, 100.8, 101.0),
+            bar('2026-11-24T07:15:00Z', 99.0, 99.2, 95.0, 95.5),
+            bar('2026-11-24T07:30:00Z', 100.0, 100.6, 99.8, 100.2)
+        ];
+        expect(selectNearestEligibleTp1({ direction: 'SELL', entry: 100.5, pools: [96, 94], candles: sellCandles, confirmIndex: 2 }))
+            .toBe(94);
+
+        const buyCandles = [
+            bar('2026-11-24T07:00:00Z', 100.0, 100.4, 99.8, 100.0),
+            bar('2026-11-24T07:15:00Z', 102.0, 105.5, 101.8, 105.0),
+            bar('2026-11-24T07:30:00Z', 100.4, 101.2, 100.3, 101.0)
+        ];
+        expect(selectNearestEligibleTp1({ direction: 'BUY', entry: 100.5, pools: [104, 106], candles: buyCandles, confirmIndex: 2 }))
+            .toBe(106);
+    });
+
+    test('rejecting the first zone still allows a second valid zone to be selected (both directions)', () => {
+        const retiredCandles = [
+            bar('2026-11-24T07:00:00Z', 101.0, 101.2, 100.8, 101.0),
+            bar('2026-11-24T07:15:00Z', 101.0, 101.1, 100.9, 101.0),
+            bar('2026-11-24T07:30:00Z', 100.0, 100.6, 99.8, 100.2),
+            bar('2026-11-24T07:45:00Z', 99.0, 99.5, 93.5, 94.0)
+        ];
+        const liveCandles = [
+            bar('2026-11-24T07:00:00Z', 201.0, 201.2, 200.8, 201.0),
+            bar('2026-11-24T07:15:00Z', 201.0, 201.1, 200.9, 201.0),
+            bar('2026-11-24T07:30:00Z', 200.0, 200.6, 199.8, 200.2),
+            bar('2026-11-24T07:45:00Z', 199.0, 199.5, 197.0, 198.0)
+        ];
+        const selectFirstSurviving = zones => zones
+            .map(zone => ({ zone, result: replayPendingLimit(zone) }))
+            .find(entry => entry.result.status === 'SURVIVES')?.zone;
+
+        const sellZones = [
+            { id: 'sell-1', direction: 'SELL', entry: 100.5, stop: 102, tp1: 94, candles: retiredCandles, confirmIndex: 2 },
+            { id: 'sell-2', direction: 'SELL', entry: 200.5, stop: 202, tp1: 194, candles: liveCandles, confirmIndex: 2 }
+        ];
+        expect(replayPendingLimit(sellZones[0]).status).toBe('RETIRED_TP1_BEFORE_FILL');
+        expect(selectFirstSurviving(sellZones)?.id).toBe('sell-2');
+
+        const buyRetired = [
+            bar('2026-11-24T07:00:00Z', 100.0, 100.4, 99.8, 100.0),
+            bar('2026-11-24T07:15:00Z', 100.0, 100.2, 99.9, 100.0),
+            bar('2026-11-24T07:30:00Z', 100.4, 101.2, 100.3, 101.0),
+            bar('2026-11-24T07:45:00Z', 101.0, 106.5, 101.0, 106.0)
+        ];
+        const buyLive = [
+            bar('2026-11-24T07:00:00Z', 100.0, 100.4, 99.8, 100.0),
+            bar('2026-11-24T07:15:00Z', 100.0, 100.2, 99.9, 100.0),
+            bar('2026-11-24T07:30:00Z', 100.4, 101.2, 100.3, 101.0),
+            bar('2026-11-24T07:45:00Z', 101.0, 102.0, 101.0, 101.8)
+        ];
+        const buyZones = [
+            { id: 'buy-1', direction: 'BUY', entry: 100.5, stop: 98, tp1: 106, candles: buyRetired, confirmIndex: 2 },
+            { id: 'buy-2', direction: 'BUY', entry: 100.5, stop: 98, tp1: 106, candles: buyLive, confirmIndex: 2 }
+        ];
+        expect(replayPendingLimit(buyZones[0]).status).toBe('RETIRED_TP1_BEFORE_FILL');
+        expect(selectFirstSurviving(buyZones)?.id).toBe('buy-2');
+    });
+
+    test('flags same-candle entry/TP1 ordering as uncertain instead of guessing', () => {
+        const candles = [
+            bar('2026-11-24T07:00:00Z', 101.0, 101.2, 100.8, 101.0),
+            bar('2026-11-24T07:15:00Z', 101.0, 101.1, 100.9, 101.0),
+            bar('2026-11-24T07:30:00Z', 100.0, 100.6, 99.8, 100.2),
+            bar('2026-11-24T07:45:00Z', 100.0, 100.6, 93.5, 95.0)
+        ];
+        expect(replayPendingLimit({ direction: 'SELL', entry: 100.5, stop: 102, tp1: 94, candles, confirmIndex: 2 }).status)
+            .toBe('SAME_CANDLE_UNCERTAIN');
+    });
+
+    test('RR_TOO_LOW is arithmetic-only: the reported XAUUSD geometry is 2.42R, not too low', () => {
+        const reported = { entry: 3650.76, stop: 3671.50, tp1: 3600.51 };
+        expect(rrOf(reported)).toBe(2.42);
+        expect(gradeRr(rrOf(reported))).toBe('ELIGIBLE_A');
+
+        const nearerTp = { entry: 3650.76, stop: 3671.50, tp1: 3630.00 };
+        expect(rrOf(nearerTp)).toBe(1.00);
+        expect(gradeRr(rrOf(nearerTp))).toBe('RR_TOO_LOW');
+    });
+
+    test('the exported pack embeds the frozen 6e95fb1 JSON contract unchanged', async () => {
+        const ctx = getContext();
+        ctx.getCurrentRawMarketAnalysisPacket = () => ({
+            symbol: 'XAU/USD',
+            text: [
+                'MARKET_PACK_SCHEMA_VERSION=MARKET_PACK_SCHEMA_V1',
+                'MARKET_STATUS=OPEN',
+                'MARKET_STATUS_SOURCE=CONFIGURED_SESSION',
+                'QUOTE_STALE=NO',
+                'REFERENCE_AGE_SECONDS=12',
+                'DATA_WARNINGS=NONE',
+                'SYMBOL=XAU/USD'
+            ].join('\n')
+        });
+        ctx.fetch = jest.fn(async () => ({ ok: true, text: async () => strategy }));
+        const pack = await ctx.buildCurrentAiMarketPack();
+        expect(contractText(pack.markdown)).toBe(FROZEN_6E95FB1_CONTRACT);
+    });
+});
+
 describe('HTF pending-limit execution backing', () => {
     test('permits a regenerated HTF-aligned fresh POI without requiring CRT, TBS, or MSNR ownership', () => {
         const ctx = getContext();
