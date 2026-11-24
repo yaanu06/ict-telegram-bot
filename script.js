@@ -22446,6 +22446,9 @@ async function buildCurrentAiMarketPack() {
     if (warnings && warnings !== 'NONE') captionParts.push('WARNINGS ' + warnings);
     return {
         markdown: [
+            'IMPORTANT OUTPUT REQUIREMENT — THIS APPLIES TO YOUR ENTIRE REPLY:',
+            'Return exactly ONE markdown code fence labelled json containing one JSON object, and nothing else: no prose, tables, headings, or explanation before or after it. Use only the exact keys, in the exact order, with the exact types defined in the OUTPUT CONTRACT inside the strategy section below. For BUY_LIMIT or SELL_LIMIT you MUST include a real numeric entry price (the proximal edge, non-zero) on the correct side of the reference price. For NO_TRADE use the required zero values and exactly one allowed reason code. This document is the data to analyze, not a conversation.',
+            '',
             '# Ghost Machine AI Market Pack',
             '',
             `- Symbol: ${packet.symbol}`,

@@ -1211,6 +1211,64 @@ describe('generated AI Market Pack metadata', () => {
     });
 });
 
+describe('pending-limit JSON output contract', () => {
+    const strategy = fs.readFileSync(path.join(__dirname, 'ghost-machine-strategy.md'), 'utf8');
+    const flat = strategy.replace(/\s+/g, ' ');
+    const contractKeyOrder = (() => {
+        const marker = '=== OUTPUT CONTRACT (STRICT) ===';
+        const start = strategy.indexOf('{', strategy.indexOf(marker));
+        const end = strategy.indexOf('}', start);
+        return [...strategy.slice(start, end).matchAll(/^[ \t]*"([a-z0-9_]+)":/gm)].map(match => match[1]);
+    })();
+    const sideRuleHolds = ({ action, entry, reference }) => {
+        if (action === 'BUY_LIMIT') return entry < reference;
+        if (action === 'SELL_LIMIT') return entry > reference;
+        return true;
+    };
+
+    test('the pack requires exactly one fenced json block with no surrounding prose', async () => {
+        const ctx = getContext();
+        ctx.getCurrentRawMarketAnalysisPacket = () => ({ symbol: 'XAU/USD', text: 'SYMBOL=XAU/USD\nMARKET_STATUS=OPEN' });
+        ctx.fetch = jest.fn(async () => ({ ok: true, text: async () => strategy }));
+        const pack = await ctx.buildCurrentAiMarketPack();
+        expect(pack.markdown).toContain('IMPORTANT OUTPUT REQUIREMENT');
+        expect(pack.markdown).toContain('Return exactly ONE markdown code fence labelled json');
+        expect(pack.markdown).toContain('no prose, tables, headings, or explanation before or after it');
+        expect(pack.markdown).toContain('MUST include a real numeric entry price');
+        expect(pack.markdown).toContain('No tables or prose outside the block.');
+        expect(strategy).toContain('Start the final reply with the literal');
+        expect(strategy).toContain('Do not wrap the JSON in prose.');
+    });
+
+    test('preserves the exact approved schema keys and order', () => {
+        expect(contractKeyOrder).toEqual([
+            'action', 'reason_code', 'grade', 'entry', 'stop_loss', 'tp1', 'tp2', 'tp3',
+            'risk', 'rr_tp1', 'confidence', 'poi_zone_low', 'poi_zone_high', 'dol_level',
+            'expiry_hours', 'htf_context', 'ltf_confirmation', 'citations', 'citations_verified',
+            'fail_reasons', 'reason', 'notes', 'watch_next'
+        ]);
+        expect(strategy).toContain('"entry": number,');
+        expect(strategy).toContain('"citations_verified": true | false,');
+    });
+
+    test('a valid future limit keeps a real entry and is not rejected for distance', () => {
+        expect(sideRuleHolds({ action: 'SELL_LIMIT', entry: 3650.76, reference: 3621.46 })).toBe(true);
+        expect(sideRuleHolds({ action: 'BUY_LIMIT', entry: 3500.00, reference: 3621.46 })).toBe(true);
+        expect(sideRuleHolds({ action: 'SELL_LIMIT', entry: 3600.00, reference: 3621.46 })).toBe(false);
+        expect(sideRuleHolds({ action: 'BUY_LIMIT', entry: 3700.00, reference: 3621.46 })).toBe(false);
+        expect(strategy).toContain('Entry must obey the side rule');
+        expect(flat).toContain('BUY_LIMIT < reference price');
+        expect(flat).toContain('SELL_LIMIT > reference price');
+        expect(flat).toContain('Never reject a setup only because price is away from the zone');
+    });
+
+    test('keeps the f95e42c pending-limit eligibility rules', () => {
+        expect(strategy).toContain('=== PENDING-LIMIT ELIGIBILITY ORDER (DO THIS EXPLICITLY, IN ORDER) ===');
+        expect(strategy).toContain('TP1 delivery before any entry touch: retire THIS specific setup');
+        expect(strategy).toContain('A single rejected zone never ends the review');
+    });
+});
+
 describe('manual scan-log persistence and outcome editing', () => {
     test('round-trips JSON records and evicts beyond the bounded cap', () => {
         const ctx = getContext();
