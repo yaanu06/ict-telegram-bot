@@ -145,9 +145,11 @@ G. Continue through every eligible zone. Return NO_TRADE only after this full
     Never use fixed pip/point constants; respect ASSET_CLASS and precision.
 
 === TARGETS ===
-15. TP1 = nearest opposing pool that is NOT body-broken. A wick tap does not
-    consume a pool; only a closed body through it does. Do not skip a valid
-    nearer pool to inflate RR.
+15. TP1 = the nearest opposing pool that price has NOT already traded through
+    before this setup. A pool already reached earlier in the session — by a
+    wick raid or a closed body — is USED and cannot be the original TP1. Do
+    not skip a nearer pool that is still untraded (ahead of price) to inflate
+    RR.
 16. TP2/TP3 = the next unused pools beyond TP1. Never invent targets and never
     place a target beyond the DOL unless another pool clearly exists there.
 17. For BUY: tp1 < tp2 < tp3 and all above entry. For SELL: the mirror.

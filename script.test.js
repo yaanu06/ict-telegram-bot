@@ -1269,6 +1269,43 @@ describe('pending-limit JSON output contract', () => {
     });
 });
 
+describe('pending-limit target selection', () => {
+    const strategy = fs.readFileSync(path.join(__dirname, 'ghost-machine-strategy.md'), 'utf8');
+
+    // A pool is "used" once price has traded through it (wick or body). For a
+    // SELL, the session low so far tells us which pools below are already used.
+    const nearestUntradedBelow = (pools, sessionLow) =>
+        pools.filter(pool => pool < sessionLow).sort((a, b) => b - a)[0] ?? null;
+
+    test('entry must be a fresh POI (not consumed, not TP1-hit)', () => {
+        expect(strategy).toContain('the POI is touched/consumed and must be rejected');
+        expect(strategy).toContain('TP1 delivery before any entry touch: retire THIS specific setup');
+    });
+
+    test('TP1 skips pools price already traded through and uses the nearest untraded pool', () => {
+        const pools = [3611.48, 3607.51, 3600.51, 3558.63, 3502.99];
+        expect(nearestUntradedBelow(pools, 3607.51)).toBe(3600.51);
+        expect(strategy).toContain('A pool already reached earlier in the session');
+        expect(strategy).toContain('cannot be the original TP1');
+    });
+
+    test('a fresh FVG above price yields a valid SELL_LIMIT with RR >= 1.70', () => {
+        const atr1h = 18.67;
+        const buffer = 1.5 * atr1h;
+        const zone = { low: 3643.03, high: 3653.24 };
+        const tp1 = nearestUntradedBelow([3611.48, 3607.51, 3600.51, 3558.63, 3502.99], 3607.51);
+        const entry = zone.high;
+        const stop = entry + buffer;
+        const risk = Math.abs(entry - stop);
+        const reward = Math.abs(tp1 - entry);
+        const rr = Math.round((reward / risk) * 100) / 100;
+        expect(tp1).toBe(3600.51);
+        expect(entry).toBeGreaterThan(3625.58);
+        expect(rr).toBeGreaterThanOrEqual(1.7);
+        expect(rr).toBeCloseTo(1.88, 2);
+    });
+});
+
 describe('manual scan-log persistence and outcome editing', () => {
     test('round-trips JSON records and evicts beyond the bounded cap', () => {
         const ctx = getContext();
