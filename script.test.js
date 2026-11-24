@@ -714,6 +714,22 @@ describe('manual market-pack prompt lint', () => {
     });
 });
 
+describe('HTF pending-limit execution backing', () => {
+    test('permits a regenerated HTF-aligned fresh POI without requiring CRT, TBS, or MSNR ownership', () => {
+        const ctx = getContext();
+        const setup = {
+            primary: 'CURRENT_STRUCTURE', direction: 'SELL',
+            current_opportunity_source: 'CURRENT_MARKET_REGENERATION',
+            execution_model: 'FRESH_RETRACEMENT_LIMIT', entry_model: 'FRESH_RETRACEMENT_LIMIT',
+            market_mechanics_verified: true, execution_confirmed: true,
+            execution_zone: { low: 110, high: 112, execution_model: 'FRESH_RETRACEMENT_LIMIT', execution_structural_invalidation: { level: 112 } },
+            target_candidates: [{ level: 100 }]
+        };
+        expect(ctx.hasExecutableOpportunityBacking(setup)).toBe(true);
+        expect(ctx.hasExecutableOpportunityBacking({ ...setup, current_opportunity_source: 'UNTRUSTED' })).toBe(false);
+    });
+});
+
 describe('symbol-aware market-pack defaults', () => {
     test.each([
         ['XAU/USD', 'METAL', 0.1, 2, false], ['XAG/USD', 'METAL', 0.001, 3, false],

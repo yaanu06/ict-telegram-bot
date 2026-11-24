@@ -3296,7 +3296,18 @@ function hasExecutableOpportunityBacking(setup = {}) {
     const zone = source?.execution_zone || setup?.execution_zone;
     const invalidation = getAuthoritativeStructuralInvalidation(zone, source);
     const targets = Array.isArray(source?.target_candidates) ? source.target_candidates : [];
-    return source?.ai_verified === true
+    // A regenerated HTF-aligned POI is a complete deterministic pending-limit
+    // opportunity in its own right. It must not require a coincidental CRT,
+    // TBS, or MSNR label merely to enter the normal stop/target/lifecycle
+    // validator. The regeneration builder has already proven HTF support,
+    // freshness, future-limit side, and a directional objective; every other
+    // execution invariant remains enforced downstream.
+    const regeneratedCurrentPoi = source?.primary === 'CURRENT_STRUCTURE'
+        && source?.current_opportunity_source === 'CURRENT_MARKET_REGENERATION'
+        && isPendingLimitExecutionModel(source?.execution_model || source?.entry_model)
+        && source?.market_mechanics_verified === true
+        && source?.execution_confirmed === true;
+    return (source?.ai_verified === true || regeneratedCurrentPoi)
         && source?.market_mechanics_verified === true
         && ['BUY', 'SELL'].includes(source?.direction)
         && Number.isFinite(Number(zone?.low))
