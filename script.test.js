@@ -693,7 +693,7 @@ describe('manual market-pack prompt lint', () => {
     const strategy = fs.readFileSync(path.join(__dirname, 'ghost-machine-strategy.md'), 'utf8');
     test('has one readable V5 pending-limit contract with correct limit semantics', () => {
         expect((strategy.match(/PROMPT_CONTRACT_VERSION=/g) || [])).toHaveLength(1);
-        expect(strategy).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_PENDING_LIMIT_V5.3');
+        expect(strategy).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_PENDING_LIMIT_V5.4');
         for (const banned of ['V2.7.2', 'DEEPSEEK JSON', 'parser will enforce', 'restored verbatim', 'JSON-only', 'MUST output']) {
             expect(strategy).not.toContain(banned);
         }
@@ -707,8 +707,8 @@ describe('manual market-pack prompt lint', () => {
         expect(strategy).toContain('does NOT count as mitigation');
         expect(strategy).toContain("Audit freshness only from the next closed candle after that confirmation.");
         expect(strategy).toContain('any later closed candle\'s range overlaps');
-        expect(strategy).toContain('RR is a quality grade, never a trade-existence veto.');
-        expect(strategy).toContain('structurally valid low-RR opportunity, not a NO_TRADE.');
+        expect(strategy).toContain('CRT and TBS may strengthen confidence or help identify the same POI');
+        expect(strategy).toContain('Best valid rr_tp1 < 1.70: NO_TRADE RR_TOO_LOW.');
         expect(strategy).toContain('"action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE"');
         expect(strategy).toContain('pending limit');
     });
@@ -918,7 +918,7 @@ describe('generated AI Market Pack metadata', () => {
         const pack = await ctx.buildCurrentAiMarketPack();
         expect((pack.markdown.match(/PROMPT_CONTRACT_VERSION=/g) || [])).toHaveLength(1);
         expect(pack.markdown).toContain('## Pending Limit Strategy Contract');
-        expect(pack.markdown).toContain('RAW_CANDLE_PENDING_LIMIT_V5.2');
+        expect(pack.markdown).toContain('RAW_CANDLE_PENDING_LIMIT_V5.4');
         expect(packetText).not.toContain('PROMPT_CONTRACT_VERSION=');
         expect(pack.markdown).toContain('Schema: TEST.1');
         expect(pack.markdown).toContain('Market status: OPEN (CONFIGURED_SESSION)');
@@ -3718,6 +3718,22 @@ describe('canonical Market Mechanics production routing', () => {
         }, 'LIVE');
         expect(pathBlocked.CANDIDATE_AUTHORITY).toBe('DIAGNOSTIC_ONLY');
         expect(pathBlocked.QUALIFICATION_BLOCKERS).toContain('PATH_BLOCKED');
+    });
+
+    it('never revives an untouched pending limit after TP1 or delivery has completed', () => {
+        const ctx = getContext();
+        const completed = ctx.normalizeMarketMechanicsAuthority({
+            id: 'completed-pending-limit', direction: 'SELL', entry_model: 'LIQUIDITY_OB_FVG', execution_model: 'PENDING_LIMIT',
+            market_mechanics_verified: true, market_plan_valid: true, market_plan_poi_valid: true,
+            execution_poi_valid: true, pending_limit_valid: true, pending_limit_geometry_complete: 'YES',
+            setup_formation_confirmed: true, entry: 105, stop_loss: 110, tp1: 90,
+            qualification_result: 'PASS', setup_confidence: 72, MODEL_QUALIFIED: 'YES', TRADE_QUALIFIED: 'YES',
+            lifecycle_state: 'COMPLETED', tp1_already_reached: true, entry_consumed: false,
+            path_quality: { path_evaluated: 'YES', path_status: 'CLEAR', path_quality_result: 'PASS', qualification_blockers: [] }
+        }, { strategy_mode: 'MARKET_MECHANICS', market_plan: { valid_context: true, market_plan_complete: true } }, 'LIVE');
+        expect(completed.CANDIDATE_AUTHORITY).toBe('DIAGNOSTIC_ONLY');
+        expect(completed.TRADE_QUALIFIED).toBe('NO');
+        expect(completed.QUALIFICATION_BLOCKERS).toContain('SETUP_ALREADY_COMPLETED');
     });
 
     it('requires an explicit evaluated path before LIVE authority and accepts a documented constrained path', () => {

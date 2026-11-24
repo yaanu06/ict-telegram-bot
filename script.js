@@ -15600,9 +15600,13 @@ function normalizeMarketMechanicsAuthority(candidate = {}, source = {}, requeste
     const confidence = getDeterministicCandidateConfidence(candidate);
     const confidenceMissing = requestedAuthority === 'LIVE' && !Number.isFinite(confidence);
     const lifecycleState = String(candidate.lifecycle_state || candidate.opportunity_status || '').toUpperCase();
-    const lifecycleTerminal = ['CONSUMED', 'FILLED', 'EXPIRED', 'INVALIDATED', 'DELIVERED', 'MISSED', 'INITIAL_PENDING_SIDE_INVALID'].includes(lifecycleState)
+    const lifecycleTerminal = ['CONSUMED', 'FILLED', 'EXPIRED', 'INVALIDATED', 'DELIVERED', 'MISSED', 'COMPLETED', 'TARGET_DELIVERED', 'DELIVERY_ADVANCED', 'INITIAL_PENDING_SIDE_INVALID'].includes(lifecycleState)
         || candidate.entry_crossed_after_signal === true || String(candidate.entry_crossed_after_signal || '').toUpperCase() === 'YES'
-        || candidate.entry_consumed === true || String(candidate.entry_consumed || '').toUpperCase() === 'YES';
+        || candidate.entry_consumed === true || String(candidate.entry_consumed || '').toUpperCase() === 'YES'
+        || candidate.tp1_already_reached === true || String(candidate.tp1_already_reached || '').toUpperCase() === 'YES';
+    const lifecycleTerminalCode = candidate.tp1_already_reached === true
+        || ['COMPLETED', 'TARGET_DELIVERED', 'DELIVERY_ADVANCED', 'DELIVERED'].includes(lifecycleState)
+        ? 'SETUP_ALREADY_COMPLETED' : 'ENTRY_ALREADY_CONSUMED';
     const modelQualified = explicitModel != null
         ? isYes(explicitModel) && planValid && marketPlanPoiValid && poiValid && !!entryModel && (!pendingLimit || pendingLimitValid)
         : mechanicallyVerified && planValid && marketPlanPoiValid && poiValid && !!entryModel && (!pendingLimit || pendingLimitValid);
@@ -15628,7 +15632,7 @@ function normalizeMarketMechanicsAuthority(candidate = {}, source = {}, requeste
         ...(stopBlocked ? ['NO_STRUCTURAL_STOP'] : []),
         ...(targetBlocked ? ['NO_STRUCTURAL_TARGET'] : []),
         ...(targetDelivered ? ['SETUP_ALREADY_COMPLETED'] : []),
-        ...(lifecycleTerminal ? ['ENTRY_ALREADY_CONSUMED'] : []),
+        ...(lifecycleTerminal ? [lifecycleTerminalCode] : []),
         ...(geometryBlocked ? ['INVALID_PENDING_LIMIT_GEOMETRY'] : []),
         ...(entryOutsideExecutionZone ? ['ENTRY_OUTSIDE_EXECUTION_ZONE'] : []),
         ...(entrySideBlocked ? ['INVALID_ENTRY_SIDE'] : []),
@@ -18048,16 +18052,13 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         || (Number(lifecycleMetrics.entry_touch_count_after_signal) > 0 ? 'YES' : 'UNKNOWN')).toUpperCase();
     const consumed = String(item.entry_consumed
         || (lifecycleMetrics.entry_consumed === true ? 'YES' : lifecycleMetrics.entry_consumed === false ? 'NO' : 'UNKNOWN')).toUpperCase();
-    // A stale upstream summary can label a setup NO_STRUCTURAL_TARGET or
-    // ENTRY_ALREADY_CONSUMED after a builder stage that could not resolve the
-    // preferred-RR target, even though the packet carries a finite structural
-    // objective and the entry zone is provably untouched.  Do not forward those
-    // self-contradicting labels to review; keep the real quality warning
-    // (below-preferred RR) and let the reviewer see the geometry it refers to.
+    // A stale upstream summary can label a setup NO_STRUCTURAL_TARGET after a
+    // builder stage that could not resolve the preferred-RR target, even though
+    // the packet carries a finite structural objective. Preserve every
+    // lifecycle-terminal label: an untouched entry does not revive an
+    // opportunity whose target/delivery has already completed.
     const hasReviewableObjective = objective != null && targetRewardRisk.length > 0;
     const staleTargetLabel = value => /NO_STRUCTURAL_TARGET|NO_VALID_TP1|TARGET_POOL_EMPTY|NO_TARGETS_DIRECTIONALLY_AHEAD|TARGETS_EXIST_BUT_RR_TOO_LOW/i.test(String(value || ''));
-    const staleLifecycleLabel = value => /ENTRY_ALREADY_CONSUMED|SETUP_ALREADY_COMPLETED|SETUP_DELIVERY_ALREADY_ADVANCED/i.test(String(value || ''));
-    const entryProvablyUntouched = touched === 'NO' && consumed !== 'YES';
     const warnings = [...new Set([
         ...(Array.isArray(item.quality_warnings) ? item.quality_warnings : []),
         ...(Array.isArray(item.warnings) ? item.warnings : []),
@@ -18076,12 +18077,10 @@ function manualMarketMechanicsOpportunityRecord(item = {}, source = {}, currentP
         const code = String(warning).trim();
         if (!code || code.toUpperCase() === 'NONE') return false;
         if (hasReviewableObjective && staleTargetLabel(code)) return false;
-        if (entryProvablyUntouched && staleLifecycleLabel(code)) return false;
         return true;
     }))];
     const rawOriginalRejection = item.original_rejection || item.rejection_code || item.primary_blocker || null;
     const originalRejection = (hasReviewableObjective && staleTargetLabel(rawOriginalRejection))
-        || (entryProvablyUntouched && staleLifecycleLabel(rawOriginalRejection))
         ? (hasReviewableObjective && rrBelowPreferred ? 'RR_BELOW_PREFERRED_MINIMUM' : null)
         : rawOriginalRejection;
     const tradeableToday = marketMechanicsTradeableToday({
