@@ -74,13 +74,48 @@ Soft warnings never block. State them in notes and lower confidence:
    range-edge reversal require a sweep and closed structural shift. If one
    zone fails, continue through all eligible zones. Session travel distance
    alone cannot reject a future limit. Reject a plan if TP1 was reached after
-   formation before fill, even if price subsequently moved back.
+   formation before fill, even if price subsequently moved back. Follow the
+   explicit eligibility order in the next section and cite the confirmation
+   time and the later candle timestamp that decides each outcome.
    CRT and TBS may strengthen confidence or help identify the same POI, but
-   they are never mandatory confirmations for a resting limit. CRT requires a
+   they are never mandatory confirmations for a resting limit, and only when
+   supported by that same setup's candles. CRT requires a
    closed reference range, a one-side raid, and a close back inside; TBS
    requires a real break of a named level followed by a closed reclaim. Use
    either only when it belongs to this exact direction, POI, and DOL—not an
    unrelated pattern elsewhere in the chart.
+
+=== PENDING-LIMIT ELIGIBILITY ORDER (DO THIS EXPLICITLY, IN ORDER) ===
+A. Establish the 1D thesis, refine it with 4H, and fix the draw on liquidity
+   (steps 1-6). Do not evaluate entry zones before the thesis and DOL exist.
+B. Enumerate fresh, HTF-aligned entry zones on 4H first, then 1H, then 15M.
+   A 15M zone is only considered when it agrees with the established 1D/4H
+   thesis. Do not stop at the first zone; evaluate every eligible zone.
+C. For each zone, record its confirmation time = the timestamp of the first
+   directional displacement candle that confirms the POI/FVG. That formation
+   candle is EXCLUDED from the post-formation touch check below.
+D. Using only evidence available at that confirmation time, identify the
+   nearest eligible, unused target in the trade direction. A pool that was
+   already body-consumed before confirmation is NOT eligible as this setup's
+   original TP1 and must be excluded from selection.
+E. From the FIRST closed candle AFTER confirmation, scan forward in time and
+   record the earliest of: (1) an entry-zone touch/fill, (2) structural
+   invalidation, or (3) TP1 delivery.
+   - TP1 delivery before any entry touch: retire THIS specific setup. Never
+     revive it by selecting a farther target, even if price later returns.
+   - Invalidation before fill: retire THIS setup.
+   - Entry touched and TP1 reached in the SAME candle, and finer (e.g. 5M)
+     data cannot establish which happened first: keep the setup but state the
+     ordering uncertainty explicitly in `reason`; do not assume the favourable
+     order.
+   - No entry touch, no invalidation, no TP1 delivery: the setup SURVIVES as a
+     valid future-retracement limit.
+F. Rank surviving candidates by (a) higher-timeframe alignment, (b) best
+   realistic RR to the nearest unused pool, (c) freshness/unmitigated state,
+   and (d) closest valid retracement that is not already inside the zone.
+G. Continue through every eligible zone. Return NO_TRADE only after this full
+   review, or on an existing hard data/risk block (DATA_INCOMPLETE,
+   NEWS_BLOCKED, NO_HTF_POI). A single rejected zone never ends the review.
 
 === PENDING LIMIT ENTRY (ALWAYS A LIMIT) ===
 9. Entry is the PROXIMAL edge of the POI (the edge nearest current price):
@@ -93,8 +128,11 @@ Soft warnings never block. State them in notes and lower confidence:
     higher) or to the midpoint, but never beyond the far edge.
 12. Never convert to a market order because price is near the zone. Never
     reject a setup only because price is away from the zone — that is what a
-    pending limit is for. Never require a live retest, a live volume spike, a
-    killzone, or live LTF confirmation before the limit can rest.
+    pending limit is for. Treat the order as a future retracement: a fresh,
+    HTF-aligned limit is eligible while price is away from entry. Never
+    require a live retest, a new 5M confirmation, a live volume spike, a
+    killzone, live LTF confirmation, or a retracement that stays within the
+    current session's realized range before the limit can rest.
 
 === STOP LOSS ===
 13. Place the stop beyond the selected POI's structural invalidation: below
@@ -129,6 +167,14 @@ Soft warnings never block. State them in notes and lower confidence:
     To improve RR, move the entry deeper inside the POI first; do not move the
     stop inside the wick, skip the nearest valid target, or invent a farther
     target.
+    RR_TOO_LOW is valid ONLY when the verified entry, the structural stop, and
+    the nearest ELIGIBLE UNUSED TP1 actually calculate below 1.70. A setup
+    whose original TP1 was delivered after confirmation but before fill is
+    RETIRED (do not report it as RR_TOO_LOW and do not inflate RR with a
+    farther target). A pool body-consumed before confirmation is excluded from
+    the original TP1. Explain the exact price and candle timestamp of any
+    claimed prior target delivery in `reason`; a rejection that cannot name the
+    target price and when it was reached is not verified.
 
 === QUALITY FACTORS (CONFIDENCE ONLY) ===
 20. 5M sweep/rejection, displacement strength, session/killzone timing
