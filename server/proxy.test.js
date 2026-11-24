@@ -69,6 +69,19 @@ describe('market and AI proxy boundary', () => {
         }
     });
 
+    test('serves the isolated AI output contract required by the market-pack sender', async () => {
+        const server = createProxyServer({ env: { PROXY_MAX_REQUESTS: '20' }, fetchImpl: jest.fn() });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            const contract = await request(server, 'GET', '/ghost-machine-output-contract.md');
+            expect(contract.status).toBe(200);
+            expect(contract.headers['content-type']).toContain('text/markdown');
+            expect(contract.body).toContain('=== OUTPUT CONTRACT (STRICT) ===');
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
+    });
+
     test('validates symbols, intervals, and bounded history sizes', () => {
         expect(validateMarketRequest('/quote', new URLSearchParams('symbol=EUR%2FUSD'))).toMatchObject({ valid: true, symbol: 'EUR/USD' });
         expect(validateMarketRequest('/quote', new URLSearchParams('symbol=NASDAQ%3AAAPL'))).toMatchObject({ valid: true, symbol: 'NASDAQ:AAPL' });
