@@ -727,12 +727,14 @@ describe('pending-limit eligibility contract', () => {
         return (cutoff === -1 ? tail : tail.slice(0, cutoff)).trimEnd();
     };
 
-    // Frozen verbatim from commit 6e95fb1da372d7134631283d498f67567a38aee.
+    // Frozen verbatim from commit 7cceb381e69e26fb641578d5e38f9e294bf9695e.
     // This block must never drift: same keys, order, types, zero values.
-    const FROZEN_6E95FB1_CONTRACT = `=== OUTPUT CONTRACT (STRICT) ===
+    const FROZEN_7CCEB38_CONTRACT = `=== OUTPUT CONTRACT (STRICT) ===
 Reply with ONE markdown code block containing a single JSON object and nothing
 else. No prose before or after. Use these exact keys and no others. Numbers are
-plain numbers rounded to 2 decimals.
+plain numbers rounded to 2 decimals. Start the final reply with the literal
+opening fence \`\`\`json on its own line. Indent the object with two spaces,
+keep the keys in the order below, and finish with the closing fence.
 
 {
   "action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",
@@ -753,7 +755,7 @@ plain numbers rounded to 2 decimals.
   "htf_context": "1-2 sentences: 1D structure, bias, and the DOL with level and timestamp",
   "ltf_confirmation": "1 sentence on any 15M/5M sweep or rejection, or NONE if the POI stands alone",
   "citations": ["each cited price/level with its candle timestamp or named level"],
-  "citations_verified": true,
+  "citations_verified": true | false,
   "fail_reasons": ["NONE, or the failed checks"],
   "reason": "evidence chain: DOL -> POI body range and source candle -> entry edge -> stop anchor and buffer -> TP1 pool and why it is unused",
   "notes": "warnings (stale quote, gap, rr_below_preferred, unknown spread/tick, session NONE) or NONE",
@@ -764,7 +766,9 @@ JSON RULES
 - On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0;
   confidence = 0; grade = "NONE"; reason_code = the allowed code; fail_reasons
   must contain that code.
-- poi_zone_low < poi_zone_high always. dol_level is a single number (use the
+- On NO_TRADE with no identifiable POI, use 0 for both zone bounds. Use 0
+  for an unavailable DOL and false for citations_verified if evidence is missing.
+- For an identified POI, poi_zone_low < poi_zone_high. dol_level is a single number (use the
   midpoint of a cluster).
 - risk and rr_tp1 must equal the arithmetic from your own numbers. Recompute
   before replying; if they do not match, fix them.
@@ -781,8 +785,8 @@ JSON RULES
 7. Every cited price has a timestamp or named level.
 8. If any check fails and cannot be fixed, return NO_TRADE with a valid code.`;
 
-    test('JSON output contract is byte-identical to 6e95fb1', () => {
-        expect(contractText(strategy)).toBe(FROZEN_6E95FB1_CONTRACT);
+    test('JSON output contract is byte-identical to 7cceb38', () => {
+        expect(contractText(strategy)).toBe(FROZEN_7CCEB38_CONTRACT);
     });
 
     test('documents the explicit eligibility order, future retracement, and RR_TOO_LOW scope', () => {
@@ -956,7 +960,7 @@ JSON RULES
         expect(gradeRr(rrOf(nearerTp))).toBe('RR_TOO_LOW');
     });
 
-    test('the exported pack embeds the frozen 6e95fb1 JSON contract unchanged', async () => {
+    test('the exported pack embeds the frozen 7cceb38 JSON contract unchanged', async () => {
         const ctx = getContext();
         ctx.getCurrentRawMarketAnalysisPacket = () => ({
             symbol: 'XAU/USD',
@@ -972,7 +976,7 @@ JSON RULES
         });
         ctx.fetch = jest.fn(async () => ({ ok: true, text: async () => strategy }));
         const pack = await ctx.buildCurrentAiMarketPack();
-        expect(contractText(pack.markdown)).toBe(FROZEN_6E95FB1_CONTRACT);
+        expect(contractText(pack.markdown)).toBe(FROZEN_7CCEB38_CONTRACT);
     });
 });
 
@@ -1196,7 +1200,7 @@ describe('generated AI Market Pack metadata', () => {
         const pack = await ctx.buildCurrentAiMarketPack();
         expect(pack.markdown).toContain(strategy.trim());
         expect(pack.markdown).toContain('## Pending Limit Strategy Contract');
-        expect(pack.markdown.trimEnd()).toMatch(/~~~$/);
+        expect(pack.markdown).toContain('No tables or prose outside the block.');
         expect(packetText).not.toContain('PROMPT_CONTRACT_VERSION=');
         expect(pack.markdown).toContain('Schema: TEST.1');
         expect(pack.markdown).toContain('Market status: OPEN (CONFIGURED_SESSION)');
