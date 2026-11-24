@@ -10,8 +10,8 @@ describe('GitHub Pages frontend artifact', () => {
         const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ict-pages-'));
         try {
             const result = buildPages({ outputDir, buildId: 'pages-test-123' });
-            expect(result.files.sort()).toEqual(['.nojekyll', 'ghost-machine-strategy.md', 'index.html', 'kronos-client.js', 'script.js', 'style.css']);
-            expect(fs.readdirSync(outputDir).sort()).toEqual(['.nojekyll', 'ghost-machine-strategy.md', 'index.html', 'kronos-client.js', 'script.js', 'style.css']);
+            expect(result.files.sort()).toEqual(['.nojekyll', 'ghost-machine-output-contract.md', 'ghost-machine-strategy.md', 'index.html', 'kronos-client.js', 'script.js', 'style.css']);
+            expect(fs.readdirSync(outputDir).sort()).toEqual(['.nojekyll', 'ghost-machine-output-contract.md', 'ghost-machine-strategy.md', 'index.html', 'kronos-client.js', 'script.js', 'style.css']);
 
             const index = fs.readFileSync(path.join(outputDir, 'index.html'), 'utf8');
             const script = fs.readFileSync(path.join(outputDir, 'script.js'), 'utf8');
