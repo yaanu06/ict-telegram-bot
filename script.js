@@ -22416,9 +22416,11 @@ function buildMarketPackChart(replay, symbol, generatedAt) {
 async function buildCurrentAiMarketPack() {
     const packet = getCurrentRawMarketAnalysisPacket();
     if (!packet) return null;
-    const strategyResponse = await fetch(`ghost-machine-strategy.md?v=${encodeURIComponent(APP_BUILD_ID || 'current')}`, { cache: 'no-store' });
-    if (!strategyResponse.ok) throw new Error('The embedded Ghost Machine strategy could not be loaded');
-    const strategyText = await strategyResponse.text();
+    // The downloadable/manual pack must use the same detailed raw-candle
+    // contract that the in-app parser validates. Loading the separate V5
+    // markdown file here created a second, incompatible AI protocol and hid
+    // the candidate cascade/lifecycle audit from external DeepSeek reviews.
+    const strategyText = (await buildRawCandleAiGhostRules()).join('\n');
     const generatedAt = new Date().toISOString();
     const safeSymbol = packet.symbol.replace(/[^A-Z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'market';
     const timestamp = generatedAt.replace(/[:.]/g, '-');

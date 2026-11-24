@@ -932,9 +932,10 @@ describe('generated AI Market Pack metadata', () => {
         ctx.getCurrentRawMarketAnalysisPacket = () => ({ symbol: 'BTC/USD', text: packetText });
         ctx.fetch = jest.fn(async () => ({ ok: true, text: async () => strategy }));
         const pack = await ctx.buildCurrentAiMarketPack();
-        expect((pack.markdown.match(/PROMPT_CONTRACT_VERSION=/g) || [])).toHaveLength(1);
+        expect((pack.markdown.match(/=== GHOST MACHINE STRATEGY RULES ===/g) || [])).toHaveLength(1);
         expect(pack.markdown).toContain('## Pending Limit Strategy Contract');
-        expect(pack.markdown).toContain('RAW_CANDLE_PENDING_LIMIT_V5.4');
+        expect(pack.markdown).toContain('=== GHOST MACHINE STRATEGY RULES === V6.2');
+        expect(pack.markdown).toContain('RANKED CANDIDATE LIST OF POIs');
         expect(packetText).not.toContain('PROMPT_CONTRACT_VERSION=');
         expect(pack.markdown).toContain('Schema: TEST.1');
         expect(pack.markdown).toContain('Market status: OPEN (CONFIGURED_SESSION)');
