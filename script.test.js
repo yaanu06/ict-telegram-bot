@@ -693,7 +693,7 @@ describe('manual market-pack prompt lint', () => {
     const strategy = fs.readFileSync(path.join(__dirname, 'ghost-machine-strategy.md'), 'utf8');
     test('has one readable V5 pending-limit contract with correct limit semantics', () => {
         expect((strategy.match(/PROMPT_CONTRACT_VERSION=/g) || [])).toHaveLength(1);
-        expect(strategy).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_PENDING_LIMIT_V5.2');
+        expect(strategy).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_PENDING_LIMIT_V5.3');
         for (const banned of ['V2.7.2', 'DEEPSEEK JSON', 'parser will enforce', 'restored verbatim', 'JSON-only', 'MUST output']) {
             expect(strategy).not.toContain(banned);
         }
@@ -707,6 +707,8 @@ describe('manual market-pack prompt lint', () => {
         expect(strategy).toContain('does NOT count as mitigation');
         expect(strategy).toContain("Audit freshness only from the next closed candle after that confirmation.");
         expect(strategy).toContain('any later closed candle\'s range overlaps');
+        expect(strategy).toContain('RR is a quality grade, never a trade-existence veto.');
+        expect(strategy).toContain('structurally valid low-RR opportunity, not a NO_TRADE.');
         expect(strategy).toContain('"action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE"');
         expect(strategy).toContain('pending limit');
     });
