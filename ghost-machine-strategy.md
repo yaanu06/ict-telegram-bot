@@ -151,9 +151,7 @@ No other reason is valid. A soft warning is not a reason code.
 === OUTPUT CONTRACT (STRICT) ===
 Reply with ONE markdown code block containing a single JSON object and nothing
 else. No prose before or after. Use these exact keys and no others. Numbers are
-plain numbers rounded to 2 decimals. Start the final reply with the literal
-opening fence ```json on its own line. Indent the object with two spaces,
-keep the keys in the order below, and finish with the closing fence.
+plain numbers rounded to 2 decimals.
 
 {
   "action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",
@@ -174,7 +172,7 @@ keep the keys in the order below, and finish with the closing fence.
   "htf_context": "1-2 sentences: 1D structure, bias, and the DOL with level and timestamp",
   "ltf_confirmation": "1 sentence on any 15M/5M sweep or rejection, or NONE if the POI stands alone",
   "citations": ["each cited price/level with its candle timestamp or named level"],
-  "citations_verified": true | false,
+  "citations_verified": true,
   "fail_reasons": ["NONE, or the failed checks"],
   "reason": "evidence chain: DOL -> POI body range and source candle -> entry edge -> stop anchor and buffer -> TP1 pool and why it is unused",
   "notes": "warnings (stale quote, gap, rr_below_preferred, unknown spread/tick, session NONE) or NONE",
@@ -185,9 +183,7 @@ JSON RULES
 - On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0;
   confidence = 0; grade = "NONE"; reason_code = the allowed code; fail_reasons
   must contain that code.
-- On NO_TRADE with no identifiable POI, use 0 for both zone bounds. Use 0
-  for an unavailable DOL and false for citations_verified if evidence is missing.
-- For an identified POI, poi_zone_low < poi_zone_high. dol_level is a single number (use the
+- poi_zone_low < poi_zone_high always. dol_level is a single number (use the
   midpoint of a cluster).
 - risk and rr_tp1 must equal the arithmetic from your own numbers. Recompute
   before replying; if they do not match, fix them.

@@ -22465,7 +22465,6 @@ async function buildCurrentAiMarketPack() {
             '~~~text',
             packet.text.trim(),
             '~~~',
-            'Return your final decision inside one fenced json block using the exact keys above, including for NO_TRADE. Put candidate review in reason and watch_next. No tables or prose outside the block.',
             ''
         ].join('\n'),
         filename: `ghost-machine-market-pack-${safeSymbol}-${timestamp}.md`,

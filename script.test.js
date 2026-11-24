@@ -934,7 +934,7 @@ describe('generated AI Market Pack metadata', () => {
         const pack = await ctx.buildCurrentAiMarketPack();
         expect(pack.markdown).toContain(strategy.trim());
         expect(pack.markdown).toContain('## Pending Limit Strategy Contract');
-        expect(pack.markdown).toContain('No tables or prose outside the block.');
+        expect(pack.markdown.trimEnd()).toMatch(/~~~$/);
         expect(packetText).not.toContain('PROMPT_CONTRACT_VERSION=');
         expect(pack.markdown).toContain('Schema: TEST.1');
         expect(pack.markdown).toContain('Market status: OPEN (CONFIGURED_SESSION)');
