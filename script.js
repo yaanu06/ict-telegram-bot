@@ -20483,10 +20483,11 @@ function buildRawCandleAiCsvLines(source = {}, timeframe, asOfMs = Date.now(), p
 function buildRawCandleAiGhostRules() {
     return `=== GHOST MACHINE STRATEGY RULES === V6.2 (DIRECTIONAL LIQUIDITY TARGETS)
 ===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ===
-1. OUTPUT FORMAT: STRICT_JSON.
+1. OUTPUT FORMAT: one valid, pretty-printed JSON object inside ONE markdown
+   code block labelled json.
 2. CONVERSATIONAL TEXT: FORBIDDEN. Do NOT write "Here is the analysis".
-3. MARKDOWN: FORBIDDEN. Do NOT use \`\`\`json or backticks.
-4. Start your response EXACTLY with { and end EXACTLY with }.
+3. Do not write anything before or after that single \`\`\`json code block.
+4. The code block must contain exactly one JSON object.
 === FORMATTING MANDATE ===
 5. PRETTY-PRINT the JSON object using two-space indentation, with every top-level
    field on its own physical line. Do NOT minify the object into one paragraph.
