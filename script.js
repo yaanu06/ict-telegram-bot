@@ -20506,7 +20506,11 @@ STEP 1. HTF MACRO BIAS (1D/4H):
 Read the SWING MAP first to locate structure, then verify the cited swings against the raw candles. If they disagree, the candles win and you must say so.
 Determine trend bias from the last 3 closed Daily candles.
 Use code-supplied SESSION_NAME and SESSION_WINDOW_UTC; do not calculate a session. Read date-labelled session levels with their dates.
-If QUOTE_STALE=YES, return NO_TRADE with reason_code DATA_STALE. Volume is optional when VOLUME_RELIABLE=NO. Size structural stops with the applicable closed-candle ATR.
+QUOTE_STALE=YES is a confidence warning, not an automatic pending-limit veto, when
+the packet still has a chronologically consistent latest closed 5M reference.
+Return NO_TRADE STALE_PACKET_RESCAN only when the quote/candle consistency tests
+in Step 4 fail. Volume is optional when VOLUME_RELIABLE=NO. Size structural stops
+with the applicable closed-candle ATR.
 
 STEP 2. MOMENTUM & VOLUME CHECK (1H):
 Compute the average volume of the last 20 closed 1H candles.
@@ -20753,7 +20757,9 @@ Return NO_TRADE ONLY IF:
 3. Every candidate has already been consumed, is too close to place a pending
    order without chasing, or only a conditional swing setup remains for a later
    session. fill_before_cancel=false alone is never a NO_TRADE reason.
-4. The packet is stale or internally inconsistent (reason STALE_PACKET_RESCAN).
+4. The packet is chronologically inconsistent or has an outdated closed-candle
+   reference under Step 4 (reason STALE_PACKET_RESCAN). QUOTE_STALE alone is not
+   sufficient when the closed 5M reference remains current.
 Session quality alone is NEVER a NO_TRADE reason.
 For NO_TRADE use setup=NONE, order_tag=none, expires_at=null, confidence=0,
 timeframe_used=NONE, management=NONE, and all entry/stop/target/risk/RR fields=null.

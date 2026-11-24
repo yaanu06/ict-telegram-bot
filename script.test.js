@@ -936,6 +936,7 @@ describe('generated AI Market Pack metadata', () => {
         expect(pack.markdown).toContain('## Pending Limit Strategy Contract');
         expect(pack.markdown).toContain('=== GHOST MACHINE STRATEGY RULES === V6.2');
         expect(pack.markdown).toContain('RANKED CANDIDATE LIST OF POIs');
+        expect(pack.markdown).toContain('QUOTE_STALE=YES is a confidence warning, not an automatic pending-limit veto');
         expect(packetText).not.toContain('PROMPT_CONTRACT_VERSION=');
         expect(pack.markdown).toContain('Schema: TEST.1');
         expect(pack.markdown).toContain('Market status: OPEN (CONFIGURED_SESSION)');
