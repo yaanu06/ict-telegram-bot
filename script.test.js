@@ -718,10 +718,11 @@ describe('pending-limit eligibility contract', () => {
     const strategy = fs.readFileSync(path.join(__dirname, 'ghost-machine-strategy.md'), 'utf8');
     const flat = strategy.replace(/\s+/g, ' ');
     const contractText = text => {
+        const normalized = String(text).replace(/\r\n/g, '\n');
         const marker = '=== OUTPUT CONTRACT (STRICT) ===';
-        const index = text.indexOf(marker);
+        const index = normalized.indexOf(marker);
         if (index === -1) return '';
-        const tail = text.slice(index);
+        const tail = normalized.slice(index);
         const cutoff = tail.indexOf('\n## Raw Closed Timeframe Data');
         return (cutoff === -1 ? tail : tail.slice(0, cutoff)).trimEnd();
     };
@@ -11591,10 +11592,10 @@ describe('RAW_CANDLE_AI multi-timeframe context packet', () => {
         expect(packet).toContain('SELL_LIMIT: choose the nearest UNUSED LOW liquidity pool strictly BELOW');
         expect(packet).toContain('BUY_LIMIT: choose the nearest UNUSED HIGH liquidity pool strictly ABOVE');
         expect(packet).toContain('===  ABSOLUTE SYSTEM OVERRIDE: STRICT JSON ONLY  ===');
-        expect(packet).toContain('1. OUTPUT FORMAT: STRICT_JSON.');
+        expect(packet).toContain('1. OUTPUT FORMAT: one valid, pretty-printed JSON object inside ONE markdown');
         expect(packet).toContain('2. CONVERSATIONAL TEXT: FORBIDDEN.');
-        expect(packet).toContain('3. MARKDOWN: FORBIDDEN. Do NOT use ```json or backticks.');
-        expect(packet).toContain('Start your response EXACTLY with { and end EXACTLY with }.');
+        expect(packet).toContain('3. Do not write anything before or after that single ```json code block.');
+        expect(packet).toContain('=== FORMATTING MANDATE ===');
         expect(packet).toContain('=== CORE PRINCIPLE ===');
         expect(packet).toContain('PENDING-ORDER PATH AND PRE-FILL LIQUIDITY RISK (DIAGNOSTIC, NOT A VETO):');
         expect(packet).toContain('A false value MUST NOT discard a valid');
