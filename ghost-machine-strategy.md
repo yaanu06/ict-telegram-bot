@@ -15,16 +15,18 @@ Candles are CLOSED only, oldest to newest. Never invent a price, timestamp,
 level, volume, or news event.
 
 === HARD BLOCKS vs SOFT WARNINGS ===
-Hard block only for:
+Hard block (NO_TRADE) only for:
 - Missing or internally inconsistent required candles (NO_TRADE DATA_INCOMPLETE).
 - NEWS_WINDOW=ACTIVE with a high-impact event inside its blocked window
   (NO_TRADE NEWS_BLOCKED).
-- No nameable POI toward a valid draw (NO_HTF_POI), the only zones toward the
-  draw are consumed/invalidated (ZONE_CONSUMED), or no structurally valid entry
-  exists (NO_VALID_ENTRY).
+- No nameable POI at all toward any draw (NO_HTF_POI).
+A weak setup is NOT a NO_TRADE. If the freshest POI is consumed, its target was
+already delivered, or RR is below target, still return the best available POI as
+a BUY_LIMIT/SELL_LIMIT with reduced confidence and the weakness in notes.
 Soft warnings never block. State them in notes and lower confidence:
 - QUOTE_STALE=YES, wide spread, gap risk, thin or unreliable volume,
-  outside the preferred session, rr_below_preferred.
+  outside the preferred session, rr_below_preferred, zone consumed, target
+  already delivered, low RR, structure unclear.
 
 === DIRECTION — 1D IS THE ANCHOR ===
 1. Read 1D first. Mark confirmed swing highs/lows and label HH/HL/LH/LL.
@@ -113,9 +115,11 @@ E. From the FIRST closed candle AFTER confirmation, scan forward in time and
 F. Rank surviving candidates by (a) higher-timeframe alignment, (b) best
    realistic RR to the nearest unused pool, (c) freshness/unmitigated state,
    and (d) closest valid retracement that is not already inside the zone.
-G. Continue through every eligible zone. Return NO_TRADE only after this full
-   review, or on an existing hard data/risk block (DATA_INCOMPLETE,
-   NEWS_BLOCKED, NO_HTF_POI). A single rejected zone never ends the review.
+G. Continue through every eligible zone. If no zone is perfect, still select the
+   best available POI (freshest, best RR) and return it as a limit order with
+   reduced confidence; note the weakness. Return NO_TRADE only for a hard block
+   (DATA_INCOMPLETE, NEWS_BLOCKED) or when no POI exists at all (NO_HTF_POI).
+   A single rejected zone never ends the review.
 
 === PENDING LIMIT ENTRY (ALWAYS A LIMIT) ===
 9. Entry is the PROXIMAL edge of the POI (the edge nearest current price):
@@ -163,18 +167,18 @@ G. Continue through every eligible zone. Return NO_TRADE only after this full
     - rr_tp1 >= 2.00: grade A.
     - 1.70 <= rr_tp1 < 2.00: grade B, confidence capped at 60, and put
       "rr_below_preferred" in notes.
-    - Best valid rr_tp1 < 1.70: NO_TRADE RR_TOO_LOW. Preserve the fresh POI,
-      DOL, and exact wait condition in watch_next so it remains visible as a
-      monitored opportunity, never as an actionable trade.
+    - Best rr_tp1 < 1.70: still return the best POI as a BUY_LIMIT/SELL_LIMIT.
+      Lower confidence (cap 50), set grade B or NONE, and put "rr_below_preferred"
+      in notes. Do NOT return NO_TRADE for low RR alone.
     To improve RR, move the entry deeper inside the POI first; do not move the
     stop inside the wick, skip the nearest valid target, or invent a farther
     target.
-    RR_TOO_LOW is valid ONLY when the verified entry, the structural stop, and
-    the nearest ELIGIBLE UNUSED TP1 actually calculate below 1.70. A setup
-    whose original TP1 was delivered after confirmation but before fill is
-    RETIRED (do not report it as RR_TOO_LOW and do not inflate RR with a
-    farther target). A pool body-consumed before confirmation is excluded from
-    the original TP1. Explain the exact price and candle timestamp of any
+    RR_TOO_LOW (a note, not a NO_TRADE) applies only when the verified entry,
+    the structural stop, and the nearest ELIGIBLE UNUSED TP1 actually calculate
+    below 1.70. A setup whose original TP1 was delivered after confirmation but
+    before fill is RETIRED (do not revive it with a farther target); fall back to
+    the next freshest POI. A pool body-consumed before confirmation is excluded
+    from the original TP1. Explain the exact price and candle timestamp of any
     claimed prior target delivery in `reason`; a rejection that cannot name the
     target price and when it was reached is not verified.
 

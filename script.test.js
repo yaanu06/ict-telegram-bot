@@ -708,7 +708,7 @@ describe('manual market-pack prompt lint', () => {
         expect(strategy).toContain("Audit freshness only from the next closed candle after that confirmation.");
         expect(strategy).toContain('any later closed candle\'s range overlaps');
         expect(strategy).toContain('CRT and TBS may strengthen confidence or help identify the same POI');
-        expect(strategy).toContain('Best valid rr_tp1 < 1.70: NO_TRADE RR_TOO_LOW.');
+        expect(strategy).toContain('Best rr_tp1 < 1.70: still return the best POI as a BUY_LIMIT/SELL_LIMIT.');
         expect(strategy).toContain('"action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE"');
         expect(strategy).toContain('pending limit');
     });
@@ -799,7 +799,7 @@ JSON RULES
         expect(flat).toContain('finer (e.g. 5M) data cannot establish which happened first');
         expect(flat).toContain("Treat the order as a future retracement");
         expect(flat).toContain("a retracement that stays within the current session's realized range");
-        expect(flat).toContain('RR_TOO_LOW is valid ONLY when the verified entry, the structural stop, and the nearest ELIGIBLE UNUSED TP1 actually calculate below 1.70');
+        expect(flat).toContain('RR_TOO_LOW (a note, not a NO_TRADE) applies only when the verified entry, the structural stop, and the nearest ELIGIBLE UNUSED TP1 actually calculate below 1.70');
         expect(flat).toContain('A single rejected zone never ends the review');
     });
 
@@ -1303,6 +1303,13 @@ describe('pending-limit target selection', () => {
         expect(entry).toBeGreaterThan(3625.58);
         expect(rr).toBeGreaterThanOrEqual(1.7);
         expect(rr).toBeCloseTo(1.88, 2);
+    });
+
+    test('a weak setup lowers confidence instead of returning NO_TRADE', () => {
+        expect(strategy).toContain('A weak setup is NOT a NO_TRADE');
+        expect(strategy).toContain('still return the best POI as a BUY_LIMIT/SELL_LIMIT');
+        expect(strategy).toContain('Do NOT return NO_TRADE for low RR alone');
+        expect(strategy).toContain('Return NO_TRADE only for a hard block');
     });
 });
 
