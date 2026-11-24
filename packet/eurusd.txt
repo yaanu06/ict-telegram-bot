@@ -1,0 +1,509 @@
+=== AI TRADING PACKET: RAW CANDLE AI ===
+PROMPT_CONTRACT_VERSION=RAW_CANDLE_AI_V2.7.2
+V2_STRATEGY_MODE=RAW_CANDLE_AI
+AUTHORITY_MODE=RAW_CANDLE_AI
+DETERMINISTIC_POI_ENGINE=DISABLED
+DETERMINISTIC_FVG_ENGINE=DISABLED
+DETERMINISTIC_ZONE_ENGINE=DISABLED
+CANDIDATE_LIST_ENGINE=DISABLED
+SYMBOL: EUR/USD
+CURRENT PRICE: 1.12250
+QUOTE TIME: 2026-11-04T07:05:00.000Z
+AS OF: 2026-11-04T07:13:44.394Z
+SERVER_TIME_UTC: 2026-11-04T07:13:44.394Z
+SERVER_TIME_EST: 02:13 EST
+KILLZONE_STATUS=LONDON
+LAST CLOSED CANDLE TIME: 2026-11-02T22:00:00.000Z
+GENERATED AT: 2026-11-04T07:15:26.101Z
+
+=== MACRO CONTEXT ===
+DAILY_BIAS=NEUTRAL
+DAILY_BIAS_METHOD=LAST_3_CLOSED_DAILY_STRUCTURE_SEE_SECTION_L
+DAILY_LAST_OPEN=1.11875
+DAILY_LAST_HIGH=1.12070
+DAILY_LAST_LOW=1.11750
+DAILY_LAST_CLOSE=1.11904
+CURRENT_PRICE=1.12250
+MACRO_LEVELS_SOURCE=CLOSED_1D
+PREVIOUS_DAY_HIGH=1.12070
+PREVIOUS_DAY_LOW=1.11750
+ASIA_HIGH=1.12630
+ASIA_LOW=1.11984
+LONDON_HIGH=1.12070
+LONDON_LOW=1.11841
+NEW_YORK_HIGH=1.12012
+NEW_YORK_LOW=1.11749
+RAW_TIMEFRAMES=1D,4H,1H,15M,5M
+CANDLE_LIMIT_PER_TIMEFRAME=1D:15,4H:30,1H:50,15M:50,5M:50
+
+======== TIMEFRAME: 1d ========
+CANDLE_COUNT=15
+CANDLE_LIMIT=15
+CANDLE_POLICY=CLOSED_ONLY
+FORMAT: time,open,high,low,close,volume
+2026-10-13T22:00:00.000Z,1.11980,1.12114,1.11130,1.11553,0
+2026-10-14T22:00:00.000Z,1.11553,1.12407,1.11553,1.12207,0
+2026-10-15T22:00:00.000Z,1.12207,1.12694,1.12080,1.12368,0
+2026-10-18T22:00:00.000Z,1.12200,1.12350,1.11830,1.12135,0
+2026-10-19T22:00:00.000Z,1.12132,1.12608,1.12046,1.12370,0
+2026-10-20T22:00:00.000Z,1.12352,1.12410,1.12141,1.12323,0
+2026-10-21T22:00:00.000Z,1.12323,1.12561,1.11886,1.12169,0
+2026-10-22T22:00:00.000Z,1.12160,1.12265,1.11847,1.12010,0
+2026-10-25T22:00:00.000Z,1.11990,1.12266,1.11736,1.11740,0
+2026-10-26T22:00:00.000Z,1.11740,1.11770,1.11222,1.11276,0
+2026-10-27T22:00:00.000Z,1.11276,1.11695,1.11131,1.11545,0
+2026-10-28T22:00:00.000Z,1.11535,1.11855,1.11046,1.11761,0
+2026-10-29T22:00:00.000Z,1.11760,1.12147,1.11365,1.11577,0
+2026-11-01T22:00:00.000Z,1.11559,1.12372,1.11543,1.11858,0
+2026-11-02T22:00:00.000Z,1.11875,1.12070,1.11750,1.11904,0
+======== END 1d ========
+
+======== TIMEFRAME: 4h ========
+CANDLE_COUNT=30
+CANDLE_LIMIT=30
+CANDLE_POLICY=CLOSED_ONLY
+FORMAT: time,open,high,low,close,volume
+2026-10-28T06:00:00.000Z,1.11186,1.11296,1.11127,1.11270,174803
+2026-10-28T10:00:00.000Z,1.11270,1.11389,1.11207,1.11339,202514
+2026-10-28T14:00:00.000Z,1.11341,1.11526,1.11239,1.11374,221244
+2026-10-28T18:00:00.000Z,1.11371,1.11695,1.11219,1.11522,384649
+2026-10-28T22:00:00.000Z,1.11526,1.11610,1.11333,1.11494,159157
+2026-10-29T02:00:00.000Z,1.11494,1.11583,1.11351,1.11365,157072
+2026-10-29T06:00:00.000Z,1.11365,1.11509,1.11250,1.11341,270641
+2026-10-29T10:00:00.000Z,1.11341,1.11521,1.11042,1.11355,346601
+2026-10-29T14:00:00.000Z,1.11355,1.11737,1.11269,1.11689,340997
+2026-10-29T18:00:00.000Z,1.11691,1.11855,1.11606,1.11754,153321
+2026-10-29T22:00:00.000Z,1.11761,1.12147,1.11756,1.11941,195428
+2026-10-30T02:00:00.000Z,1.11941,1.12028,1.11804,1.11845,162875
+2026-10-30T06:00:00.000Z,1.11845,1.12015,1.11758,1.11985,286322
+2026-10-30T10:00:00.000Z,1.11985,1.12060,1.11480,1.11493,319257
+2026-10-30T14:00:00.000Z,1.11493,1.11728,1.11362,1.11513,370533
+2026-10-30T18:00:00.000Z,1.11515,1.11716,1.11508,1.11577,155441
+2026-11-01T22:00:00.000Z,1.11559,1.11717,1.11522,1.11699,101285
+2026-11-02T02:00:00.000Z,1.11702,1.11850,1.11622,1.11827,104615
+2026-11-02T06:00:00.000Z,1.11827,1.12372,1.11780,1.12179,242772
+2026-11-02T10:00:00.000Z,1.12179,1.12295,1.12017,1.12141,289976
+2026-11-02T14:00:00.000Z,1.12141,1.12222,1.11896,1.12049,352446
+2026-11-02T18:00:00.000Z,1.12049,1.12065,1.11853,1.11856,142990
+2026-11-02T22:00:00.000Z,1.11858,1.11975,1.11811,1.11856,115188
+2026-11-03T02:00:00.000Z,1.11856,1.11950,1.11765,1.11923,149802
+2026-11-03T06:00:00.000Z,1.11925,1.12070,1.11841,1.11909,267014
+2026-11-03T10:00:00.000Z,1.11909,1.12012,1.11749,1.11921,302237
+2026-11-03T14:00:00.000Z,1.11921,1.11982,1.11750,1.11947,314697
+2026-11-03T18:00:00.000Z,1.11947,1.11995,1.11880,1.11904,129741
+2026-11-03T22:00:00.000Z,1.11929,1.12630,1.11851,1.12402,298948
+2026-11-04T02:00:00.000Z,1.12402,1.12600,1.12242,1.12360,459647
+======== END 4h ========
+
+======== TIMEFRAME: 1h ========
+CANDLE_COUNT=50
+CANDLE_LIMIT=50
+CANDLE_POLICY=CLOSED_ONLY
+FORMAT: time,open,high,low,close,volume
+2026-11-02T05:00:00.000Z,1.11755,1.11850,1.11749,1.11827,29821
+2026-11-02T06:00:00.000Z,1.11827,1.11881,1.11780,1.11849,31303
+2026-11-02T07:00:00.000Z,1.11852,1.11979,1.11847,1.11967,61438
+2026-11-02T08:00:00.000Z,1.11968,1.12246,1.11928,1.12220,65831
+2026-11-02T09:00:00.000Z,1.12220,1.12372,1.12168,1.12179,84200
+2026-11-02T10:00:00.000Z,1.12179,1.12210,1.12026,1.12028,60062
+2026-11-02T11:00:00.000Z,1.12028,1.12124,1.12017,1.12067,59654
+2026-11-02T12:00:00.000Z,1.12067,1.12211,1.12056,1.12116,65136
+2026-11-02T13:00:00.000Z,1.12117,1.12295,1.12102,1.12141,105124
+2026-11-02T14:00:00.000Z,1.12141,1.12222,1.12071,1.12125,103617
+2026-11-02T15:00:00.000Z,1.12116,1.12139,1.11953,1.11967,106104
+2026-11-02T16:00:00.000Z,1.11967,1.12037,1.11896,1.12031,76272
+2026-11-02T17:00:00.000Z,1.12029,1.12090,1.12011,1.12049,66976
+2026-11-02T18:00:00.000Z,1.12049,1.12065,1.11916,1.11965,53911
+2026-11-02T19:00:00.000Z,1.11965,1.12032,1.11948,1.11987,16253
+2026-11-02T20:00:00.000Z,1.11946,1.12015,1.11900,1.11931,51874
+2026-11-02T21:00:00.000Z,1.11933,1.11933,1.11853,1.11856,20952
+2026-11-02T22:00:00.000Z,1.11858,1.11915,1.11811,1.11879,3437
+2026-11-02T23:00:00.000Z,1.11873,1.11923,1.11840,1.11916,13314
+2026-11-03T00:00:00.000Z,1.11916,1.11975,1.11833,1.11879,46411
+2026-11-03T01:00:00.000Z,1.11883,1.11892,1.11832,1.11856,52026
+2026-11-03T02:00:00.000Z,1.11856,1.11860,1.11765,1.11848,43341
+2026-11-03T03:00:00.000Z,1.11848,1.11911,1.11812,1.11896,44336
+2026-11-03T04:00:00.000Z,1.11900,1.11931,1.11846,1.11894,31113
+2026-11-03T05:00:00.000Z,1.11894,1.11950,1.11891,1.11923,31012
+2026-11-03T06:00:00.000Z,1.11925,1.11967,1.11849,1.11903,41852
+2026-11-03T07:00:00.000Z,1.11903,1.12070,1.11897,1.11980,72752
+2026-11-03T08:00:00.000Z,1.11980,1.12058,1.11897,1.11932,81997
+2026-11-03T09:00:00.000Z,1.11932,1.11948,1.11841,1.11909,70413
+2026-11-03T10:00:00.000Z,1.11909,1.11914,1.11809,1.11831,61416
+2026-11-03T11:00:00.000Z,1.11830,1.11842,1.11751,1.11811,49028
+2026-11-03T12:00:00.000Z,1.11811,1.11833,1.11749,1.11811,68934
+2026-11-03T13:00:00.000Z,1.11812,1.12012,1.11776,1.11921,122859
+2026-11-03T14:00:00.000Z,1.11921,1.11982,1.11834,1.11974,103752
+2026-11-03T15:00:00.000Z,1.11974,1.11979,1.11750,1.11937,99653
+2026-11-03T16:00:00.000Z,1.11939,1.11976,1.11884,1.11918,64526
+2026-11-03T17:00:00.000Z,1.11918,1.11976,1.11910,1.11947,46766
+2026-11-03T18:00:00.000Z,1.11947,1.11995,1.11923,1.11953,39013
+2026-11-03T19:00:00.000Z,1.11954,1.11965,1.11893,1.11899,40497
+2026-11-03T20:00:00.000Z,1.11899,1.11932,1.11880,1.11918,32304
+2026-11-03T21:00:00.000Z,1.11918,1.11930,1.11894,1.11904,17927
+2026-11-03T22:00:00.000Z,1.11929,1.11929,1.11857,1.11863,3889
+2026-11-03T23:00:00.000Z,1.11865,1.12088,1.11851,1.12067,36335
+2026-11-04T00:00:00.000Z,1.12069,1.12239,1.11984,1.12147,89386
+2026-11-04T01:00:00.000Z,1.12151,1.12630,1.12137,1.12402,169338
+2026-11-04T02:00:00.000Z,1.12402,1.12587,1.12264,1.12528,142687
+2026-11-04T03:00:00.000Z,1.12528,1.12568,1.12345,1.12442,121828
+2026-11-04T04:00:00.000Z,1.12443,1.12600,1.12316,1.12326,101777
+2026-11-04T05:00:00.000Z,1.12327,1.12400,1.12242,1.12360,93355
+2026-11-04T06:00:00.000Z,1.12358,1.12393,1.12250,1.12301,72500
+======== END 1h ========
+
+======== TIMEFRAME: 15m ========
+CANDLE_COUNT=50
+CANDLE_LIMIT=50
+CANDLE_POLICY=CLOSED_ONLY
+FORMAT: time,open,high,low,close,volume
+2026-11-03T18:30:00.000Z,1.11962,1.11975,1.11923,1.11937,10716
+2026-11-03T18:45:00.000Z,1.11938,1.11958,1.11923,1.11953,7736
+2026-11-03T19:00:00.000Z,1.11954,1.11965,1.11908,1.11933,10660
+2026-11-03T19:15:00.000Z,1.11936,1.11949,1.11919,1.11922,10289
+2026-11-03T19:30:00.000Z,1.11924,1.11924,1.11902,1.11905,9442
+2026-11-03T19:45:00.000Z,1.11905,1.11922,1.11893,1.11899,10106
+2026-11-03T20:00:00.000Z,1.11899,1.11915,1.11880,1.11904,10477
+2026-11-03T20:15:00.000Z,1.11904,1.11925,1.11890,1.11924,6640
+2026-11-03T20:30:00.000Z,1.11924,1.11932,1.11910,1.11924,6721
+2026-11-03T20:45:00.000Z,1.11924,1.11930,1.11900,1.11918,8466
+2026-11-03T21:00:00.000Z,1.11918,1.11920,1.11903,1.11918,5485
+2026-11-03T21:15:00.000Z,1.11918,1.11923,1.11903,1.11920,3531
+2026-11-03T21:30:00.000Z,1.11920,1.11930,1.11900,1.11919,3713
+2026-11-03T21:45:00.000Z,1.11919,1.11922,1.11894,1.11904,5198
+2026-11-03T22:00:00.000Z,1.11929,1.11929,1.11859,1.11881,324
+2026-11-03T22:15:00.000Z,1.11881,1.11897,1.11868,1.11876,856
+2026-11-03T22:30:00.000Z,1.11877,1.11889,1.11870,1.11880,1130
+2026-11-03T22:45:00.000Z,1.11882,1.11890,1.11857,1.11863,1579
+2026-11-03T23:00:00.000Z,1.11865,1.11891,1.11851,1.11874,4538
+2026-11-03T23:15:00.000Z,1.11874,1.11931,1.11869,1.11929,4305
+2026-11-03T23:30:00.000Z,1.11929,1.12030,1.11916,1.11941,13352
+2026-11-03T23:45:00.000Z,1.11940,1.12088,1.11936,1.12067,14140
+2026-11-04T00:00:00.000Z,1.12069,1.12085,1.11984,1.12057,15208
+2026-11-04T00:15:00.000Z,1.12057,1.12225,1.12036,1.12206,22934
+2026-11-04T00:30:00.000Z,1.12206,1.12239,1.12131,1.12178,27433
+2026-11-04T00:45:00.000Z,1.12176,1.12189,1.12110,1.12147,23811
+2026-11-04T01:00:00.000Z,1.12151,1.12378,1.12137,1.12375,46564
+2026-11-04T01:15:00.000Z,1.12373,1.12492,1.12305,1.12487,39830
+2026-11-04T01:30:00.000Z,1.12488,1.12608,1.12423,1.12604,38794
+2026-11-04T01:45:00.000Z,1.12603,1.12630,1.12289,1.12402,44150
+2026-11-04T02:00:00.000Z,1.12402,1.12417,1.12264,1.12361,44122
+2026-11-04T02:15:00.000Z,1.12361,1.12483,1.12326,1.12454,36232
+2026-11-04T02:30:00.000Z,1.12456,1.12542,1.12441,1.12503,31613
+2026-11-04T02:45:00.000Z,1.12503,1.12587,1.12496,1.12528,30720
+2026-11-04T03:00:00.000Z,1.12528,1.12568,1.12470,1.12508,35527
+2026-11-04T03:15:00.000Z,1.12508,1.12519,1.12345,1.12367,31377
+2026-11-04T03:30:00.000Z,1.12370,1.12540,1.12364,1.12526,27789
+2026-11-04T03:45:00.000Z,1.12528,1.12539,1.12422,1.12442,27135
+2026-11-04T04:00:00.000Z,1.12443,1.12531,1.12436,1.12467,29647
+2026-11-04T04:15:00.000Z,1.12467,1.12504,1.12447,1.12467,20752
+2026-11-04T04:30:00.000Z,1.12466,1.12600,1.12456,1.12469,26572
+2026-11-04T04:45:00.000Z,1.12469,1.12512,1.12316,1.12326,24806
+2026-11-04T05:00:00.000Z,1.12327,1.12363,1.12263,1.12281,28919
+2026-11-04T05:15:00.000Z,1.12287,1.12303,1.12242,1.12282,23805
+2026-11-04T05:30:00.000Z,1.12283,1.12347,1.12268,1.12342,20936
+2026-11-04T05:45:00.000Z,1.12347,1.12400,1.12323,1.12360,19695
+2026-11-04T06:00:00.000Z,1.12358,1.12393,1.12283,1.12320,20822
+2026-11-04T06:15:00.000Z,1.12319,1.12328,1.12250,1.12266,17500
+2026-11-04T06:30:00.000Z,1.12268,1.12336,1.12261,1.12325,16984
+2026-11-04T06:45:00.000Z,1.12325,1.12340,1.12274,1.12301,17194
+======== END 15m ========
+
+======== TIMEFRAME: 5m ========
+CANDLE_COUNT=50
+CANDLE_LIMIT=50
+CANDLE_POLICY=CLOSED_ONLY
+FORMAT: time,open,high,low,close,volume
+2026-11-04T03:00:00.000Z,1.12528,1.12568,1.12470,1.12507,11306
+2026-11-04T03:05:00.000Z,1.12508,1.12549,1.12477,1.12502,12220
+2026-11-04T03:10:00.000Z,1.12502,1.12530,1.12476,1.12508,12001
+2026-11-04T03:15:00.000Z,1.12508,1.12519,1.12361,1.12392,12883
+2026-11-04T03:20:00.000Z,1.12392,1.12415,1.12357,1.12368,9664
+2026-11-04T03:25:00.000Z,1.12368,1.12396,1.12345,1.12367,8830
+2026-11-04T03:30:00.000Z,1.12370,1.12450,1.12364,1.12432,9952
+2026-11-04T03:35:00.000Z,1.12432,1.12514,1.12424,1.12504,9406
+2026-11-04T03:40:00.000Z,1.12507,1.12540,1.12498,1.12526,8431
+2026-11-04T03:45:00.000Z,1.12528,1.12539,1.12488,1.12530,8707
+2026-11-04T03:50:00.000Z,1.12529,1.12533,1.12462,1.12473,8943
+2026-11-04T03:55:00.000Z,1.12473,1.12475,1.12422,1.12442,9485
+2026-11-04T04:00:00.000Z,1.12443,1.12488,1.12439,1.12484,9915
+2026-11-04T04:05:00.000Z,1.12482,1.12531,1.12476,1.12497,10651
+2026-11-04T04:10:00.000Z,1.12499,1.12501,1.12436,1.12467,9081
+2026-11-04T04:15:00.000Z,1.12467,1.12487,1.12447,1.12478,7211
+2026-11-04T04:20:00.000Z,1.12476,1.12484,1.12454,1.12468,6584
+2026-11-04T04:25:00.000Z,1.12465,1.12504,1.12458,1.12467,6957
+2026-11-04T04:30:00.000Z,1.12466,1.12566,1.12465,1.12557,6656
+2026-11-04T04:35:00.000Z,1.12557,1.12600,1.12510,1.12527,9191
+2026-11-04T04:40:00.000Z,1.12527,1.12554,1.12456,1.12469,10725
+2026-11-04T04:45:00.000Z,1.12469,1.12512,1.12448,1.12470,8494
+2026-11-04T04:50:00.000Z,1.12470,1.12477,1.12375,1.12395,7554
+2026-11-04T04:55:00.000Z,1.12395,1.12399,1.12316,1.12326,8758
+2026-11-04T05:00:00.000Z,1.12327,1.12363,1.12284,1.12294,10130
+2026-11-04T05:05:00.000Z,1.12293,1.12330,1.12285,1.12287,9891
+2026-11-04T05:10:00.000Z,1.12287,1.12310,1.12263,1.12281,8898
+2026-11-04T05:15:00.000Z,1.12287,1.12302,1.12242,1.12274,8559
+2026-11-04T05:20:00.000Z,1.12275,1.12303,1.12258,1.12266,7345
+2026-11-04T05:25:00.000Z,1.12268,1.12303,1.12261,1.12282,7901
+2026-11-04T05:30:00.000Z,1.12283,1.12294,1.12268,1.12273,6608
+2026-11-04T05:35:00.000Z,1.12273,1.12344,1.12271,1.12302,7484
+2026-11-04T05:40:00.000Z,1.12302,1.12347,1.12287,1.12342,6844
+2026-11-04T05:45:00.000Z,1.12347,1.12383,1.12323,1.12379,7104
+2026-11-04T05:50:00.000Z,1.12382,1.12400,1.12352,1.12377,6608
+2026-11-04T05:55:00.000Z,1.12377,1.12390,1.12351,1.12360,5983
+2026-11-04T06:00:00.000Z,1.12358,1.12393,1.12330,1.12362,7603
+2026-11-04T06:05:00.000Z,1.12362,1.12375,1.12312,1.12314,6719
+2026-11-04T06:10:00.000Z,1.12313,1.12330,1.12283,1.12320,6500
+2026-11-04T06:15:00.000Z,1.12319,1.12324,1.12291,1.12312,5317
+2026-11-04T06:20:00.000Z,1.12314,1.12328,1.12296,1.12304,5962
+2026-11-04T06:25:00.000Z,1.12304,1.12304,1.12250,1.12266,6221
+2026-11-04T06:30:00.000Z,1.12268,1.12313,1.12261,1.12308,6558
+2026-11-04T06:35:00.000Z,1.12307,1.12334,1.12302,1.12314,5222
+2026-11-04T06:40:00.000Z,1.12313,1.12336,1.12294,1.12325,5204
+2026-11-04T06:45:00.000Z,1.12325,1.12339,1.12305,1.12330,5450
+2026-11-04T06:50:00.000Z,1.12328,1.12335,1.12294,1.12330,5980
+2026-11-04T06:55:00.000Z,1.12331,1.12340,1.12274,1.12301,5764
+2026-11-04T07:00:00.000Z,1.12301,1.12311,1.12237,1.12239,7815
+2026-11-04T07:05:00.000Z,1.12240,1.12275,1.12239,1.12250,7752
+======== END 5m ========
+
+=== GHOST MACHINE STRATEGY RULES === V2.7.2 (DEEPSEEK JSON)
+You are the Ghost Machine. Read the raw closed candles yourself. No deterministic POI, FVG, order-block, MSNR, supply/demand zone or candidate list is supplied or authoritative. Deterministic macro liquidity levels are supplied only as context.
+UNIVERSE: use only the CSV candles in this packet. Never invent a candle, price, timestamp, volume or level.
+MACRO CONTEXT: DAILY_BIAS, daily OHLC, PDH/PDL and completed session highs/lows are context only. The raw 1D/4H candles own higher-timeframe structure; 1H/15M/5M own intraday formation and execution.
+
+=== DEEPSEEK REASONING PROTOCOL (READ FIRST) ===
+You are running in THINK MODE. Follow this exact sequence:
+
+STEP 1. Derive the Section L bias from the last three contiguous closed 1D candles.
+STEP 2. Identify the last completed 4H MSS.
+STEP 3. Scan all five timeframes for BOTH bullish and bearish sweeps.
+STEP 4. Separate BREAKDOWNS, BREAKOUTS, FAILED BREAKDOWNS, FAILED BREAKOUTS from the sweep list.
+STEP 5. Compute the killzone from SERVER_TIME_UTC. IF THE KILLZONE IS OUTSIDE (NONE), YOU MUST RETURN NO_TRADE. Asian-session setups are permitted only under the STEP 7 Asia rules.
+STEP 6. READ THE CURRENT INTRADAY CONTEXT: Look at the most recent 1H and 15M candles. Is price currently TRENDING, RANGING, or CONSOLIDATING?
+STEP 7. Construct the candidate: OB body, entry, stop, TP1/TP2/TP3.
+        You MUST align this setup with the current session context:
+
+        - IF LONDON or NEW YORK: Look for the standard 2.0+ RR. You can target the opposite session high/low (PDH/PDL). Stop loss can be tight (but never inside the sweep wick).
+
+        - IF ASIA SESSION:
+          1. The Asian range usually forms between 00:00 and 07:00 UTC.
+          2. Do NOT target far-away 1H/4H pools. Your TP1 MUST be the opposite edge of the Asian Range (Asia High or Asia Low).
+          3. You MUST use a wider stop loss (minimum 7.00 points for XAU) because Asian liquidity is thin and stop-hunts are common.
+          4. If the RR to the opposite edge of the Asian range is less than 2.00, you MUST return NO_TRADE. (Do not force a trade if the range is too tight).
+STEP 8. VERIFY ARITHMETIC TWICE. Relocate TP1 if body-broken. RR must be >= 2.00.
+STEP 9. Emit the JSON object.
+
+The JSON object is the only permitted output.
+
+=== SECTION L: DAILY BIAS ===
+The 1D block is ordered oldest-to-newest. D1 = the LAST row. D2 = the row
+immediately above D1. D3 = the row immediately above D2. D1, D2, D3 are
+CONTIGUOUS - no rows between them may be skipped.
+
+  BULLISH  iff  D1.high > D3.high AND D1.low > D3.low
+  BEARISH  iff  D1.high < D3.high AND D1.low < D3.low
+  RANGE    otherwise
+
+4H MSS tiebreaker: identify the last completed 4H body-close break of a named
+4H swing high or low. If that MSS agrees with Section L, the bias is
+CONFIRMED. If it disagrees, treat as RANGE unless the MSS occurred within the
+last 3 closed 4H candles in the direction of Section L.
+RANGE = no directional trade unless a named 4H MSS supplies direction.
+The packet's DAILY_BIAS label is advisory. If Section L disagrees, use Section L.
+
+=== SECTION M: SWEEP SCAN ===
+Scan all five timeframes (1D, 4H, 1H, 15M, 5M) for liquidity sweeps. A sweep
+= a closed candle whose wick exceeded a named prior swing, equal-high/equal-
+low cluster, or session/PDH/PDL level by >= 1 increment AND closed back inside
+prior structure.
+
+Direction semantics:
+  LOW sweep  (wick below level, close ABOVE) = BULLISH signal (sell-side grab)
+  HIGH sweep (wick above level, close BELOW) = BEARISH signal (buy-side grab)
+
+Candle wicks beyond a level AND closes beyond the same side = BREAKDOWN or
+BREAKOUT, not a sweep. List separately. A FAILED BREAKDOWN is a low wick
+below a level + a later candle body-closing back above (bullish trap reversal).
+A FAILED BREAKOUT is the mirror (bearish trap reversal).
+
+Tier classification:
+  TIER_1:  completed ASIA/LONDON/NEW_YORK high or low, or PDH/PDL
+  TIER_2:  named 4H or 1H swing high/low
+  TIER_3:  unclassified intraday swing (15M/5M only)
+
+MANDATORY per-timeframe enumeration: for EACH timeframe, list BOTH the most
+recent BULLISH sweep and the most recent BEARISH sweep (or NONE). Skipping
+either direction on any timeframe is a contract violation.
+
+Directional priority:
+  - A TIER_1 sweep in the direction of the confirmed bias is the primary thesis.
+  - A counter-bias TIER_1 sweep is DISCARDED unless a named 4H MSS exists in
+    that sweep's direction.
+  - If no sweep exists on any timeframe, return NO_TRADE.
+
+=== SECTION N: KILLZONE ===
+Compute from SERVER_TIME_UTC using fixed UTC windows. No DST adjustments.
+  ASIA:              00:00-07:00 UTC   (thin liquidity - enforce the STEP 7 Asia rules)
+  LONDON:            07:00-11:00 UTC
+  LONDON/NY OVERLAP: 11:00-12:00 UTC   (highest liquidity - INSIDE)
+  NEW YORK:          12:00-15:00 UTC
+
+CRITICAL RULE: If the computed window is "NONE" (Outside Killzone), you are strictly FORBIDDEN from returning a trade. You must return action "NO_TRADE". Asian-session setups are permitted only under the STEP 7 Asia rules.
+The packet's KILLZONE_STATUS label is advisory; recompute from UTC.
+
+=== SETUP CONSTRUCTION ===
+
+=== PENDING LIMIT & PROXIMAL EDGE ===
+1. AGGRESSIVE DISPLACEMENT: The leg leaving the OB must be violent.
+2. PROXIMAL EDGE OR CURRENT PRICE: Because we are placing a PENDING LIMIT order, place the limit at the proximal edge of the OB/FVG. HOWEVER, if the current price is already within 2.0 points of the proximal edge, DO NOT wait for a deep pullback. You must place the entry at or very near the CURRENT PRICE to guarantee the fill before the displacement continues.
+3. NO CHASING ONLY APPLIES TO DISTANT ZONES: If the OB is more than 2.0 points away, place the limit and wait. If the OB is right at current price, enter immediately.
+
+=== MARKET CONTEXT & REACTION ===
+=== CRT & MSNR LOGIC ===
+1. CRT (Candle Range Theory): Look for price sweeping the high/low of the
+   previous Daily or 4H candle range. When the 15M or 1H chart sweeps that HTF
+   extreme and immediately reverses, this is a CRT play.
+2. MSNR (Market Structure Neo-Retail): Identify exactly where retail traders
+   are trapped. A high-probability zone is one where the sweep clearly grabbed
+   retail stop-losses before the displacement leg.
+3. TBS (Time-Based Supply): Only trade these zones when the session timing
+   aligns (London or NY Killzones).
+
+=== PRECISION PRICE ACTION & VOLUME ===
+1. REJECTION CLOSE: The sweep candle must close back inside the prior range (a valid rejection). A 2x wick-to-body ratio is NOT required for 1H/4H/1D timeframes. Instead, require that the candle closes in the top 30% (for bullish sweeps) or bottom 30% (for bearish sweeps) of its total range.
+2. VOLUME CLIMAX: Check the 'volume' column in the CSV. The sweep candle and the immediate displacement candle must show a spike in volume compared to the previous 3 candles. High volume = institutional participation.
+3. SHARP PULLBACK: The move away from the Order Block must be sharp (displacement). If the price grinds slowly back to the OB over many candles, the momentum is dead, and it is likely to break through the zone. Do not trade slow grinds.
+4. DIVERGENCE (MOMENTUM SHIFT): Look for bullish/bearish divergence (e.g., price makes a lower low, but the body of the candle is much smaller than the previous drop, or it closes in the top 50% of the sweep). Divergence confirms that banks are absorbing the liquidity.
+
+ORDER BLOCK:
+The OB is the last opposite-direction candle before the displacement leg.
+  - Bullish OB: the last BEARISH candle (close < open) before the up leg.
+  - Bearish OB: the last BULLISH candle (close > open) before the down leg.
+The OB zone is that candle's BODY (open-to-close). The wick is never the OB.
+Using the sweep candle itself as the OB is a contract violation.
+
+STOP LOSS (DYNAMIC & VOLATILITY-AWARE):
+Place stop_loss at the NEAREST structural invalidation based on the MARKET CONTEXT:
+- If TRENDING_BULLISH / TRENDING_BEARISH: Place the stop BEYOND the recent
+  structural swing low/high that caused the displacement.
+- If RANGING / CONSOLIDATING: Place the stop at the OB far edge + standard buffer.
+
+CRITICAL XAU/USD STOP LOSS RULE: For Gold (XAU/USD), the stop loss must ALWAYS be placed safely BEYOND the actual structural sweep wick with a minimum 0.50 buffer.
+- DO NOT place the stop loss INSIDE the sweep wick.
+- The absolute minimum risk distance is 4.50 points. If the structural wick is closer than 4.50 points, you MUST widen the stop to 4.50 points.
+- If the structural wick is further than 4.50 points, you MUST place the stop beyond the wick (e.g., if the wick is 6.0 points away, the stop must be at 6.5 points).
+
+Never widen the stop to swallow distant HTF swing highs/lows, PDH/PDL, or
+round numbers unless that level IS the immediate structural invalidation.
+
+TAKE PROFIT:
+TP1 = the NEAREST opposing 1H/4H pool that has NOT been body-closed through
+in the direction of the trade. "Unused" means no closed candle body-closed
+beyond the level. WICK-TAPS do NOT disqualify a pool.
+If the nearest candidate TP1 IS body-broken, DO NOT reject the trade -
+relocate TP1 to the next unused pool above (BUY) or below (SELL) and
+recompute RR. Only if RR still < 2.00 after relocation does the setup fail.
+TP2 and TP3 extend to the next unused pools. Never inflate TP to improve RR.
+
+RISK/REWARD:
+  RISK = |entry - stop_loss|
+  REWARD = |tp1 - entry|
+  RR_TP1 = REWARD / RISK (two decimals, verify)
+RR_TP1 must be >= 2.00. Below 2.00 = NO_TRADE. Never fabricate a target or tighten the stop past a valid invalidation to fix RR.
+- ASIAN RANGE RULE: During the Asia session, you are forbidden from targeting the PDH/PDL or London High/Low unless they are inside the Asian Range. You must target the opposite side of the Asian Range. If price is already near the middle of the Asian range, return NO_TRADE.
+
+=== WORKED ACCEPTANCE EXAMPLE ===
+BULLISH Section L bias. London-low TIER_1 bullish sweep at 1H 2026-10-28T06:00
+(wick 4028.19 below LONDON_LOW 4028.20, close 4030.82 above).
+Bullish OB at 1H 2026-10-28T05:00 (body 4030.37-4036.68).
+
+TP1 candidates above entry (BUY):
+  NY_HIGH 4054.53 - body-broken on 1H 2026-10-27T15:00 - USED.
+  LONDON_HIGH 4058.30 - wick-tapped but never body-broken - UNUSED.
+  PDH 4065.70 - wick-tapped twice but NEVER body-closed above - UNUSED, MAJOR.
+
+Correct TP1: 4065.70 (nearest unused MAJOR pool).
+Result: ENTRY=4034.00  SL=4027.50  TP1=4065.70
+        RISK=6.50  REWARD=31.70  RR=4.88
+
+=== RAW CANDLE AI REVIEW INSTRUCTION ===
+Analyze the raw candles independently. Follow the DEEPSEEK REASONING PROTOCOL in order.
+Derive the Section L bias. Identify the 4H MSS. Enumerate all sweeps.
+Compute killzone per Section N. If outside, RETURN NO_TRADE.
+Read the current market context. Select the primary thesis using Section M directional priority.
+Construct the sniper candidate: OB body, entry, stop, TP1/TP2/TP3.
+Prioritize CRT and MSNR traps. Place the pending limit at the proximal edge of the OB/FVG, or at/very near current price when it is already within 2.0 points of that edge.
+Confirm the sweep rejection wick (body/wick ratio), the volume spike versus the previous 3 candles, and any momentum divergence on the sweep.
+ENFORCE THE DYNAMIC STOP LOSS: Place the stop safely beyond the sweep wick + 0.50 buffer. Enforce the 4.50 point absolute minimum.
+VERIFY ARITHMETIC TWICE.
+If no qualifying setup exists, return action "NO_TRADE" with zero geometry.
+Output the exact JSON object defined in the OUTPUT CONTRACT. No prose, no markdown, no extra fields.
+
+=== OUTPUT CONTRACT ===
+Reply with a SINGLE JSON object. No prose before or after. No markdown fences.
+
+{
+  "action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",
+  "setup": "<OB|FVG|SUPPLY|DEMAND|FLIP|BREAKER|SWEEP|combined with +, or NONE>",
+  "current_market_context": "<TRENDING_BULLISH|TRENDING_BEARISH|RANGING|CONSOLIDATING>",
+  "crt_msnr_confirmation": "<1 sentence explaining the CRT sweep and MSNR retail trap>",
+  "sniper_zone_justification": "<1 sentence proving the entry is at an FVG/imbalance or proximal edge, and the displacement was aggressive>",
+  "price_action_confirmation": "<1 sentence explaining the rejection wick size AND if there was momentum divergence on the sweep>",
+  "session_volatility_check": "<1 sentence explaining if the SL and TP are sized correctly for the current session's ATR>",
+  "entry": <number>,
+  "stop_loss": <number>,
+  "tp1": <number>,
+  "tp2": <number>,
+  "tp3": <number>,
+  "risk": <number>,
+  "rr_tp1": <number>,
+  "confidence": <integer 0-100>,
+  "timeframe_used": "1d|4h|1h|15m|5m|NONE",
+  "management": "<text instruction or NONE>",
+  "audit": {
+    "daily_bias": {
+      "direction": "BULLISH|BEARISH|RANGE",
+      "d3_h": <number>, "d3_l": <number>,
+      "d2_h": <number>, "d2_l": <number>,
+      "d1_h": <number>, "d1_l": <number>,
+      "four_hour_mss": "<timestamp or NONE>"
+    },
+    "sweeps": [
+      {"tf": "1d",  "bullish": "<tf ts level direction tier>", "bearish": "<tf ts level direction tier>"},
+      {"tf": "4h",  "bullish": "...", "bearish": "..."},
+      {"tf": "1h",  "bullish": "...", "bearish": "..."},
+      {"tf": "15m", "bullish": "...", "bearish": "..."},
+      {"tf": "5m",  "bullish": "...", "bearish": "..."}
+    ],
+    "breaks": [
+      "<BREAKOUT: tf ts level>",
+      "<BREAKDOWN: tf ts level>",
+      "<FAILED_BREAKOUT: tf ts level>",
+      "<FAILED_BREAKDOWN: tf ts level>"
+    ],
+    "killzone": {
+      "server_time_utc": "<timestamp>",
+      "computed_window": "ASIA|LONDON|OVERLAP|NEW_YORK|NONE",
+      "inside": true
+    }
+  },
+  "reason": "<evidence: sweep ts + level, OB body range, nearest-invalidation stop, TP1 pool + why unused, RR calc, bias justification>"
+}
+
+VALIDATION RULES (the parser will enforce these):
+- BUY_LIMIT: entry < current_price, stop_loss < entry, entry < tp1 < tp2 < tp3
+- SELL_LIMIT: entry > current_price, stop_loss > entry, entry > tp1 > tp2 > tp3
+- rr_tp1 must equal (|tp1 - entry| / |entry - stop_loss|) to two decimals
+- rr_tp1 must be >= 2.00 for BUY_LIMIT or SELL_LIMIT
+- For XAU/USD, (|entry - stop_loss|) must be >= 4.50
+- crt_msnr_confirmation must name both the CRT sweep and the MSNR retail trap
+- audit.sweeps must contain exactly 5 entries (1d, 4h, 1h, 15m, 5m)
+- If computed_window is NONE: action MUST be NO_TRADE.
+- On NO_TRADE: entry, stop_loss, tp1, tp2, tp3, risk, rr_tp1 = 0; confidence = 0; timeframe_used = "NONE"; management = "NONE".
+- On BUY_LIMIT/SELL_LIMIT: every price must trace to a candle in the supplied blocks. Never invent a level.
+- sniper_zone_justification must explicitly mention an FVG/imbalance or the proximal edge.
+- If the entry is at the 50% equilibrium or distal edge of the OB, it is a contract violation.
+- price_action_confirmation must mention the rejection wick size and the momentum divergence check.
+- session_volatility_check must state whether the SL and TP are sized correctly for the current session ATR.
+- Do NOT include extra fields.
+- FORMATTING: Output the JSON object with standard indentation and line breaks (pretty-print). Do not minify the JSON.
