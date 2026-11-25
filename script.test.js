@@ -694,7 +694,7 @@ describe('manual market-pack prompt lint', () => {
     const outputContract = fs.readFileSync(path.join(__dirname, 'ghost-machine-output-contract.md'), 'utf8');
     test('has one readable V5 pending-limit contract with correct limit semantics', () => {
         expect((strategy.match(/PROMPT_CONTRACT_VERSION=/g) || [])).toHaveLength(1);
-        expect(strategy).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_CURRENT_OPPORTUNITY_V5.6');
+        expect(strategy).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_CURRENT_OPPORTUNITY_V5.7');
         for (const banned of ['V2.7.2', 'DEEPSEEK JSON', 'parser will enforce', 'restored verbatim', 'JSON-only', 'MUST output']) {
             expect(strategy).not.toContain(banned);
         }
@@ -712,6 +712,8 @@ describe('manual market-pack prompt lint', () => {
         expect(strategy).toContain('rr_tp1 < 1.70: reject that candidate.');
         expect(strategy).toContain('=== NEXT-OPPORTUNITY RESCAN CYCLE ===');
         expect(strategy).toContain('restart the search using only POIs confirmed AFTER that retirement candle.');
+        expect(strategy).toContain('=== INTRADAY TRANSITION EXCEPTION ===');
+        expect(strategy).toContain('confidence is capped at 65.');
         expect(outputContract).toContain('"action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE"');
         expect(strategy).toContain('pending limit');
     });
@@ -1264,6 +1266,7 @@ describe('pending-limit JSON output contract', () => {
         expect(pack.markdown).toContain('MUST include a real numeric entry price');
         expect(pack.markdown).toContain('FINAL CHECK: your response must literally start with ```json');
         expect(pack.markdown).toContain('SCAN-CYCLE REQUIREMENT: This is a fresh current-opportunity scan.');
+        expect(pack.markdown).toContain('INTRADAY-TRANSITION REQUIREMENT: After the normal HTF-aligned review');
         expect(pack.markdown).toContain('No tables or prose outside the block.');
         expect(outputContract).toContain('Start the final reply with the literal');
         expect(outputContract).toContain('Do not wrap the JSON in prose.');
