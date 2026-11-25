@@ -22451,6 +22451,7 @@ async function buildCurrentAiMarketPack() {
         markdown: [
             'IMPORTANT OUTPUT REQUIREMENT — THIS APPLIES TO YOUR ENTIRE REPLY:',
             'Return exactly ONE markdown code fence labelled json containing one JSON object, and nothing else: no prose, tables, headings, or explanation before or after it. Use only the exact keys, in the exact order, with the exact types defined in the OUTPUT CONTRACT section below. For BUY_LIMIT or SELL_LIMIT you MUST include a real numeric entry price (the proximal edge, non-zero) on the correct side of the reference price. For NO_TRADE use the required zero values and exactly one allowed reason code. FINAL CHECK: your response must literally start with ```json and end with ```; if not, rewrite it before sending. If your own cited entry, stop and eligible TP1 calculate RR >= 1.70 and you cannot name a hard failure, action MUST be BUY_LIMIT or SELL_LIMIT—not NO_TRADE. This document is the data to analyze, not a conversation.',
+            'SCAN-CYCLE REQUIREMENT: This is a fresh current-opportunity scan. If an older candidate was touched, invalidated, or delivered to target before entry, retire only that candidate, find the deciding closed candle, and rescan later 15M/1H POIs under the same intact 1D/4H thesis. Do not reuse that old POI or target; do not return NO_TRADE until the later-POI rescan is complete.',
             '',
             '# Ghost Machine AI Market Pack',
             '',
