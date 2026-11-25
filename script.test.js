@@ -694,7 +694,7 @@ describe('manual market-pack prompt lint', () => {
     const outputContract = fs.readFileSync(path.join(__dirname, 'ghost-machine-output-contract.md'), 'utf8');
     test('has one readable V5 pending-limit contract with correct limit semantics', () => {
         expect((strategy.match(/PROMPT_CONTRACT_VERSION=/g) || [])).toHaveLength(1);
-        expect(strategy).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_PENDING_LIMIT_V5.4');
+        expect(strategy).toContain('PROMPT_CONTRACT_VERSION=RAW_CANDLE_CURRENT_OPPORTUNITY_V5.5');
         for (const banned of ['V2.7.2', 'DEEPSEEK JSON', 'parser will enforce', 'restored verbatim', 'JSON-only', 'MUST output']) {
             expect(strategy).not.toContain(banned);
         }
@@ -706,10 +706,10 @@ describe('manual market-pack prompt lint', () => {
         expect(strategy).toMatch(/15M\s+pattern must never reverse or replace that higher-timeframe thesis/);
         expect(strategy).toContain('15M POI: buffer = max(1.5 * ATR_15M, 2 * SPREAD, 2 * TICK_SIZE).');
         expect(strategy).toContain('does NOT count as mitigation');
-        expect(strategy).toContain("Audit freshness only from the next closed candle after that confirmation.");
-        expect(strategy).toContain('any later closed candle\'s range overlaps');
+        expect(strategy).toContain('Audit freshness from the next closed candle after confirmation.');
+        expect(strategy).toContain('reaches the proposed entry makes that exact limit candidate touched');
         expect(strategy).toContain('CRT and TBS may strengthen confidence or help identify the same POI');
-        expect(strategy).toContain('Best rr_tp1 < 1.70: still return the best POI as a BUY_LIMIT/SELL_LIMIT.');
+        expect(strategy).toContain('rr_tp1 < 1.70: reject that candidate.');
         expect(outputContract).toContain('"action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE"');
         expect(strategy).toContain('pending limit');
     });
@@ -729,8 +729,7 @@ describe('pending-limit eligibility contract', () => {
         return (cutoff === -1 ? tail : tail.slice(0, cutoff)).trimEnd();
     };
 
-    // Frozen verbatim from commit 7cceb381e69e26fb641578d5e38f9e294bf9695e.
-    // This block must never drift: same keys, order, types, zero values.
+    // Frozen current-opportunity output contract: same keys, order, types, zero values.
     const FROZEN_7CCEB38_CONTRACT = `=== OUTPUT CONTRACT (STRICT) ===
 Reply with ONE markdown code block containing a single JSON object and nothing
 else. No prose before or after. Use these exact keys and no others. Numbers are
@@ -753,7 +752,7 @@ keep the keys in the order below, and finish with the closing fence.
   "poi_zone_low": number,
   "poi_zone_high": number,
   "dol_level": number,
-  "expiry_hours": 24 | 48,
+  "expiry_hours": 1 | 2 | 4,
   "htf_context": "1-2 sentences: 1D structure, bias, and the DOL with level and timestamp",
   "ltf_confirmation": "1 sentence on any 15M/5M sweep or rejection, or NONE if the POI stands alone",
   "citations": ["each cited price/level with its candle timestamp or named level"],
@@ -774,6 +773,11 @@ JSON RULES
   midpoint of a cluster).
 - risk and rr_tp1 must equal the arithmetic from your own numbers. Recompute
   before replying; if they do not match, fix them.
+- On BUY_LIMIT or SELL_LIMIT, expiry_hours must be 1, 2, or 4 and must not run
+  past the current UTC trading day. A POI already touched at its proposed entry,
+  a candidate whose original TP1 was delivered before entry, an entry farther
+  than 1.5 x ATR_1H, or rr_tp1 below 1.70 is not a lower-confidence order:
+  reject it and return NO_TRADE if no other current candidate qualifies.
 - Do not add, remove, or rename keys. Do not wrap the JSON in prose.
 
 === SELF-CHECK BEFORE OUTPUT ===
@@ -787,7 +791,7 @@ JSON RULES
 7. Every cited price has a timestamp or named level.
 8. If any check fails and cannot be fixed, return NO_TRADE with a valid code.`;
 
-    test('JSON output contract is byte-identical to 7cceb38', () => {
+    test('JSON output contract is byte-identical to the current-opportunity contract', () => {
         expect(contractText(outputContract)).toBe(FROZEN_7CCEB38_CONTRACT);
     });
 
@@ -800,8 +804,8 @@ JSON RULES
         expect(flat).toContain('revive it by selecting a farther target');
         expect(flat).toContain('finer (e.g. 5M) data cannot establish which happened first');
         expect(flat).toContain("Treat the order as a future retracement");
-        expect(flat).toContain("a retracement that stays within the current session's realized range");
-        expect(flat).toContain('RR_TOO_LOW (a note, not a NO_TRADE) applies only when the verified entry, the structural stop, and the nearest ELIGIBLE UNUSED TP1 actually calculate below 1.70');
+        expect(flat).toContain('entry distance must be no more than 1.5 x ATR_1H');
+        expect(flat).toContain('RR_TOO_LOW applies only when the verified entry, the structural stop, and the nearest ELIGIBLE UNUSED TP1 actually calculate below 1.70');
         expect(flat).toContain('A single rejected zone never ends the review');
     });
 
@@ -1265,13 +1269,13 @@ describe('pending-limit JSON output contract', () => {
         expect(strategy).toContain('Entry must obey the side rule');
         expect(flat).toContain('BUY_LIMIT < reference price');
         expect(flat).toContain('SELL_LIMIT > reference price');
-        expect(flat).toContain('Never reject a setup only because price is away from the zone');
+        expect(flat).toContain('entry distance must be no more than 1.5 x ATR_1H');
     });
 
     test('keeps the f95e42c pending-limit eligibility rules', () => {
         expect(strategy).toContain('=== PENDING-LIMIT ELIGIBILITY ORDER (DO THIS EXPLICITLY, IN ORDER) ===');
         expect(strategy).toContain('TP1 delivery before any entry touch: retire THIS specific setup');
-        expect(strategy).toContain('A single rejected zone never ends the review');
+        expect(strategy).toMatch(/A single rejected zone never ends the\s+review/);
     });
 });
 
@@ -1284,7 +1288,7 @@ describe('pending-limit target selection', () => {
         pools.filter(pool => pool < sessionLow).sort((a, b) => b - a)[0] ?? null;
 
     test('entry must be a fresh POI (not consumed, not TP1-hit)', () => {
-        expect(strategy).toContain('the POI is touched/consumed and must be rejected');
+        expect(strategy).toContain('reaches the proposed entry makes that exact limit candidate touched');
         expect(strategy).toContain('TP1 delivery before any entry touch: retire THIS specific setup');
     });
 
@@ -1311,11 +1315,11 @@ describe('pending-limit target selection', () => {
         expect(rr).toBeCloseTo(1.88, 2);
     });
 
-    test('a weak setup lowers confidence instead of returning NO_TRADE', () => {
-        expect(strategy).toContain('A weak setup is NOT a NO_TRADE');
-        expect(strategy).toContain('still return the best POI as a BUY_LIMIT/SELL_LIMIT');
-        expect(strategy).toContain('Do NOT return NO_TRADE for low RR alone');
-        expect(strategy).toContain('Return NO_TRADE only for a hard block');
+    test('rejects stale or weak candidates and keeps searching for a new current POI', () => {
+        expect(strategy).toContain('does not retire a newly formed, separate');
+        expect(strategy).toContain('do not use a reduced-confidence fallback order');
+        expect(strategy).toContain('if none meets 1.70, return NO_TRADE RR_TOO_LOW');
+        expect(strategy).toContain('expiry_hours must be 1, 2, or 4 only');
     });
 });
 

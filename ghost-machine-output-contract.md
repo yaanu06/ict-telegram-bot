@@ -20,7 +20,7 @@ keep the keys in the order below, and finish with the closing fence.
   "poi_zone_low": number,
   "poi_zone_high": number,
   "dol_level": number,
-  "expiry_hours": 24 | 48,
+  "expiry_hours": 1 | 2 | 4,
   "htf_context": "1-2 sentences: 1D structure, bias, and the DOL with level and timestamp",
   "ltf_confirmation": "1 sentence on any 15M/5M sweep or rejection, or NONE if the POI stands alone",
   "citations": ["each cited price/level with its candle timestamp or named level"],
@@ -41,6 +41,11 @@ JSON RULES
   midpoint of a cluster).
 - risk and rr_tp1 must equal the arithmetic from your own numbers. Recompute
   before replying; if they do not match, fix them.
+- On BUY_LIMIT or SELL_LIMIT, expiry_hours must be 1, 2, or 4 and must not run
+  past the current UTC trading day. A POI already touched at its proposed entry,
+  a candidate whose original TP1 was delivered before entry, an entry farther
+  than 1.5 x ATR_1H, or rr_tp1 below 1.70 is not a lower-confidence order:
+  reject it and return NO_TRADE if no other current candidate qualifies.
 - Do not add, remove, or rename keys. Do not wrap the JSON in prose.
 
 === SELF-CHECK BEFORE OUTPUT ===
