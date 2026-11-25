@@ -737,6 +737,11 @@ plain numbers rounded to 2 decimals. Start the final reply with the literal
 opening fence \`\`\`json on its own line. Indent the object with two spaces,
 keep the keys in the order below, and finish with the closing fence.
 
+FINAL RESPONSE GATE: Before sending, inspect the final reply. It must begin
+with \`\`\`json and end with \`\`\`; it must contain no heading, table, explanation,
+or text outside that one fence. If it does not, rewrite it as the required JSON
+object before sending. This gate applies even if you used analysis internally.
+
 {
   "action": "BUY_LIMIT" | "SELL_LIMIT" | "NO_TRADE",
   "reason_code": "NONE" | "<one allowed code>",
@@ -783,6 +788,10 @@ JSON RULES
   partial/stop-to-breakeven checkpoint. Name it in reason and notes; TP1 may be
   the next unused structural pool that provides at least 1.70R. Never omit the
   nearer checkpoint just to make RR appear better.
+- Decision consistency: if the cited entry, structural stop, and eligible TP1
+  calculate rr_tp1 >= 1.70 and no named hard failure applies, action MUST be
+  BUY_LIMIT or SELL_LIMIT. Never describe such a candidate and then return
+  NO_TRADE or "needs further assessment".
 - Do not add, remove, or rename keys. Do not wrap the JSON in prose.
 
 === SELF-CHECK BEFORE OUTPUT ===
@@ -1251,6 +1260,7 @@ describe('pending-limit JSON output contract', () => {
         expect(pack.markdown).toContain('Return exactly ONE markdown code fence labelled json');
         expect(pack.markdown).toContain('no prose, tables, headings, or explanation before or after it');
         expect(pack.markdown).toContain('MUST include a real numeric entry price');
+        expect(pack.markdown).toContain('FINAL CHECK: your response must literally start with ```json');
         expect(pack.markdown).toContain('No tables or prose outside the block.');
         expect(outputContract).toContain('Start the final reply with the literal');
         expect(outputContract).toContain('Do not wrap the JSON in prose.');
@@ -1327,6 +1337,8 @@ describe('pending-limit target selection', () => {
         expect(strategy).toContain('do not use a reduced-confidence fallback order');
         expect(strategy).toContain('if none meets 1.70, return NO_TRADE RR_TOO_LOW');
         expect(strategy).toContain('expiry_hours must be 1, 2, or 4 only');
+        expect(strategy).toContain('DECISION CONSISTENCY GATE');
+        expect(strategy).toContain('qualifying candidate and then output NO_TRADE');
     });
 });
 

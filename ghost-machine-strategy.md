@@ -147,6 +147,10 @@ G. Continue through every eligible zone, including newly formed current-session
    review. Return a limit only when one candidate survives every hard check.
    If none survives, return NO_TRADE with the most specific allowed reason code;
    do not use a reduced-confidence fallback order.
+   DECISION CONSISTENCY GATE: if your own cited entry, structural stop, and
+   eligible TP1 calculate rr_tp1 >= 1.70 and no named hard failure applies,
+   you MUST return that BUY_LIMIT or SELL_LIMIT. You may not describe it as a
+   qualifying candidate and then output NO_TRADE or "needs further assessment".
 
 === PENDING LIMIT ENTRY (ALWAYS A LIMIT) ===
 9. Entry is the PROXIMAL edge of the POI (the edge nearest current price):
