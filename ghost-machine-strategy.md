@@ -16,9 +16,10 @@ level, volume, or news event.
 
 === CURRENT-OPPORTUNITY MANDATE ===
 This scan is for the best executable opportunity available NOW, not a stale
-chart explanation or a multi-day resting idea. Rebuild the candidate list from
-the most recent closed 1H, 15M, and 5M price action before considering older
-4H/1H POIs. A valid limit must be fresh, on the correct side of current price,
+chart explanation or a multi-day resting idea. First establish the 1D/4H
+thesis; then rebuild the candidate list from the most recent closed 1H, 15M,
+and 5M price action and rank it under that thesis. A valid limit must be fresh,
+on the correct side of current price,
 have an unused TP1, meet the minimum RR, and be realistically reachable in the
 current trading day. Never report a candidate merely because it was once a
 valid POI.
@@ -157,29 +158,33 @@ G. Continue through every eligible zone, including newly formed current-session
 11. If RR needs it, move the entry DEEPER into the body (BUY lower, SELL
     higher) or to the midpoint, but never beyond the far edge.
 12. Never convert to a market order because price is near the zone. Treat the
-    order as a future retracement, but only for the current opportunity: its
-    entry distance must be no more than 1.5 x ATR_1H and it must be reasonably
-    reachable before the current UTC trading day ends. Never require a live
-    retest, a new 5M confirmation, a live volume spike, or a killzone before
-    the limit can rest. If ATR_1H is unavailable or the distance/time test
-    cannot be verified, reject that candidate as NO_VALID_ENTRY.
+    order as a future retracement, but only for the current opportunity: it must
+    be reasonably reachable before the current UTC trading day ends based on
+    recent 15M/5M travel and the selected expiry. Do not impose a fixed ATR
+    distance ceiling that rejects an otherwise valid HTF-aligned POI. Never
+    require a live retest, a new 5M confirmation, a live volume spike, or a
+    killzone before the limit can rest. If reachability cannot be verified from
+    the supplied candles, reject that candidate as NO_VALID_ENTRY.
 
 === STOP LOSS ===
 13. Place the stop beyond the selected POI's structural invalidation: below
     the invalidating wick/body edge for BUY_LIMIT, above it for SELL_LIMIT.
     Never inside that selected POI's invalidation.
 14. Add a symbol-aware buffer using the selected POI timeframe:
-    - 15M POI: buffer = max(1.5 * ATR_15M, 2 * SPREAD, 2 * TICK_SIZE).
-    - 1H or 4H POI: buffer = max(1.5 * ATR_1H, 2 * SPREAD, 2 * TICK_SIZE).
+    - 15M POI: buffer = max(0.25 * ATR_15M, 2 * SPREAD, 2 * TICK_SIZE).
+    - 1H or 4H POI: buffer = max(0.50 * ATR_1H, 2 * SPREAD, 2 * TICK_SIZE).
     If SPREAD or TICK_SIZE is UNKNOWN, use the ATR term and say so in notes.
     Never use fixed pip/point constants; respect ASSET_CLASS and precision.
 
 === TARGETS ===
-15. TP1 = the nearest opposing pool that price has NOT already traded through
-    before this setup. A pool already reached earlier in the session — by a
-    wick raid or a closed body — is USED and cannot be the original TP1. Do
-    not skip a nearer pool that is still untraded (ahead of price) to inflate
-    RR.
+15. Find opposing pools that price has NOT already traded through before this
+    setup. A pool already reached earlier in the session — by a wick raid or a
+    closed body — is USED and cannot be a target. The nearest unused pool is an
+    interim liquidity checkpoint. If it is too close to provide 1.70R with the
+    structural stop, name it in `reason` and `notes` as a partial/stop-to-
+    breakeven checkpoint; TP1 may be the next unused structural pool that gives
+    at least 1.70R. Never skip the nearer checkpoint silently or pretend it is
+    irrelevant just to inflate RR.
 16. TP2/TP3 = the next unused pools beyond TP1. Never invent targets and never
     place a target beyond the DOL unless another pool clearly exists there.
 17. For BUY: tp1 < tp2 < tp3 and all above entry. For SELL: the mirror.
@@ -187,7 +192,8 @@ G. Continue through every eligible zone, including newly formed current-session
 === RISK / REWARD ===
 18. risk = |entry - stop_loss|; reward = |tp1 - entry|; rr_tp1 = reward / risk.
     Round to 2 decimals and state the arithmetic twice in your reasoning.
-19. Grade by RR after the POI, structural stop, and nearest unused TP1 are
+19. Grade by RR after the POI, structural stop, documented interim checkpoint,
+    and first eligible structural TP1 are
     fixed. RR must never be improved by changing the stop or skipping a nearer
     target:
     - rr_tp1 >= 2.00: grade A.
@@ -198,9 +204,9 @@ G. Continue through every eligible zone, including newly formed current-session
     To improve RR, move the entry deeper inside the POI first; do not move the
     stop inside the wick, skip the nearest valid target, or invent a farther
     target.
-    RR_TOO_LOW applies only when the verified entry,
-    the structural stop, and the nearest ELIGIBLE UNUSED TP1 actually calculate
-    below 1.70. A setup whose original TP1 was delivered after confirmation but
+    RR_TOO_LOW applies only when the verified entry, structural stop, and every
+    eligible unused structural target after any documented interim checkpoint
+    calculate below 1.70. A setup whose original TP1 was delivered after confirmation but
     before fill is RETIRED (do not revive it with a farther target); fall back to
     the next freshest POI. A pool body-consumed before confirmation is excluded
     from the original TP1. Explain the exact price and candle timestamp of any

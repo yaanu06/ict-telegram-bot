@@ -704,7 +704,7 @@ describe('manual market-pack prompt lint', () => {
         expect(strategy).toMatch(/1D first/i);
         expect(strategy).toContain('15M order blocks or fair value gaps are permitted only');
         expect(strategy).toMatch(/15M\s+pattern must never reverse or replace that higher-timeframe thesis/);
-        expect(strategy).toContain('15M POI: buffer = max(1.5 * ATR_15M, 2 * SPREAD, 2 * TICK_SIZE).');
+        expect(strategy).toContain('15M POI: buffer = max(0.25 * ATR_15M, 2 * SPREAD, 2 * TICK_SIZE).');
         expect(strategy).toContain('does NOT count as mitigation');
         expect(strategy).toContain('Audit freshness from the next closed candle after confirmation.');
         expect(strategy).toContain('reaches the proposed entry makes that exact limit candidate touched');
@@ -774,10 +774,15 @@ JSON RULES
 - risk and rr_tp1 must equal the arithmetic from your own numbers. Recompute
   before replying; if they do not match, fix them.
 - On BUY_LIMIT or SELL_LIMIT, expiry_hours must be 1, 2, or 4 and must not run
-  past the current UTC trading day. A POI already touched at its proposed entry,
-  a candidate whose original TP1 was delivered before entry, an entry farther
-  than 1.5 x ATR_1H, or rr_tp1 below 1.70 is not a lower-confidence order:
-  reject it and return NO_TRADE if no other current candidate qualifies.
+  past the current UTC trading day. Do not impose a fixed ATR distance ceiling
+  on an otherwise valid HTF-aligned POI. A POI already touched at its proposed
+  entry, or a candidate whose original TP1 was delivered before entry, is not a
+  lower-confidence order: reject it and return NO_TRADE if no other current
+  candidate qualifies.
+- A nearer unused liquidity pool that cannot provide 1.70R may be an interim
+  partial/stop-to-breakeven checkpoint. Name it in reason and notes; TP1 may be
+  the next unused structural pool that provides at least 1.70R. Never omit the
+  nearer checkpoint just to make RR appear better.
 - Do not add, remove, or rename keys. Do not wrap the JSON in prose.
 
 === SELF-CHECK BEFORE OUTPUT ===
@@ -786,7 +791,8 @@ JSON RULES
 3. POI is unmitigated, cited to a candle timestamp, and its proximal edge is on
    the correct side of price.
 4. Stop is beyond invalidation plus the symbol-aware buffer, never in the wick.
-5. TP1 is the nearest unused, not body-broken pool; TP ordering is correct.
+5. Any nearer unused pool is documented as an interim checkpoint; TP1 is the
+   first eligible unused structural pool after it. TP ordering is correct.
 6. RR arithmetic appears twice and matches risk/rr_tp1.
 7. Every cited price has a timestamp or named level.
 8. If any check fails and cannot be fixed, return NO_TRADE with a valid code.`;
@@ -804,8 +810,8 @@ JSON RULES
         expect(flat).toContain('revive it by selecting a farther target');
         expect(flat).toContain('finer (e.g. 5M) data cannot establish which happened first');
         expect(flat).toContain("Treat the order as a future retracement");
-        expect(flat).toContain('entry distance must be no more than 1.5 x ATR_1H');
-        expect(flat).toContain('RR_TOO_LOW applies only when the verified entry, the structural stop, and the nearest ELIGIBLE UNUSED TP1 actually calculate below 1.70');
+        expect(flat).toContain('Do not impose a fixed ATR distance ceiling');
+        expect(flat).toContain('RR_TOO_LOW applies only when the verified entry, structural stop, and every eligible unused structural target after any documented interim checkpoint calculate below 1.70');
         expect(flat).toContain('A single rejected zone never ends the review');
     });
 
@@ -1269,7 +1275,7 @@ describe('pending-limit JSON output contract', () => {
         expect(strategy).toContain('Entry must obey the side rule');
         expect(flat).toContain('BUY_LIMIT < reference price');
         expect(flat).toContain('SELL_LIMIT > reference price');
-        expect(flat).toContain('entry distance must be no more than 1.5 x ATR_1H');
+        expect(flat).toContain('Do not impose a fixed ATR distance ceiling');
     });
 
     test('keeps the f95e42c pending-limit eligibility rules', () => {
@@ -1292,11 +1298,12 @@ describe('pending-limit target selection', () => {
         expect(strategy).toContain('TP1 delivery before any entry touch: retire THIS specific setup');
     });
 
-    test('TP1 skips pools price already traded through and uses the nearest untraded pool', () => {
+    test('uses the nearest untraded pool as an interim checkpoint when it cannot provide valid RR', () => {
         const pools = [3611.48, 3607.51, 3600.51, 3558.63, 3502.99];
         expect(nearestUntradedBelow(pools, 3607.51)).toBe(3600.51);
         expect(strategy).toContain('A pool already reached earlier in the session');
-        expect(strategy).toContain('cannot be the original TP1');
+        expect(strategy).toContain('interim liquidity checkpoint');
+        expect(strategy).toContain('TP1 may be the next unused structural pool');
     });
 
     test('a fresh FVG above price yields a valid SELL_LIMIT with RR >= 1.70', () => {
